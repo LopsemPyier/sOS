@@ -53,25 +53,30 @@ static inline int usm_alloc_impl(struct usm_event *usmEvent, struct policy_funct
     event->eventPosition = &(optEvent->iulist);
 
     printf("Created sOSEvent\n");
+    printf("Allocation of vaddr %ld to paddr %ld\n", usmEvent->vaddr, usmEvent->paddr);
 
     unsigned long av = 0;
-    unsigned long req = min(usmEvent->length, 512);
-    int vpfn = -1, pfn, pos = 0;
-    while (req-- > 0) {
+    unsigned long req = min(usmEvent->length+1, 512);
+    usmEvent->paddr = 0;
+    int vpfn = -1, pfn, pos = 0, count = 0;
+    while (req > 0) {
         if (policy->select_phys_to_virtual(event)) {
             trace("TRACE: exiting sOS::API::usm_alloc_impl -- error\n");
             return 1;
         }
 
-        if (vpfn == -1) {
-            vpfn = event->physical_id;
+        printf("Associating virtual_id %lu to physical_id %lu\n", event->virtual_id, event->physical_id);
+
+        if (usmEvent->paddr == 0) {
             usmEvent->paddr = event->physical_id;
-            usmPrepPreAlloc(usmEvent, vpfn++, pos)
+        } else if (vpfn == -1) {
+            vpfn = event->physical_id;
+            usmPrepPreAlloc(usmEvent, vpfn++, pos);
         } else {
             pfn = event->physical_id;
 
             if (likely(vpfn == pfn)) {
-                count ++;
+                count++;
             } else {
                 usmPrepPreAllocFastCounted(usmEvent, pos, count);
                 usmPrepPreAlloc(usmEvent, pfn, pos);
@@ -83,13 +88,14 @@ static inline int usm_alloc_impl(struct usm_event *usmEvent, struct policy_funct
         event->virtual_id += VIRTUAL_RESOURCE_SIZE;
         event->physical_id = 0;
         av++;
+        req--;
     }
 
     if (likely(count)) {
         usmPrepPreAllocFastCounted(usmEvent, pos, count);
     }
 
-    usmEvent->length = av;
+    usmEvent->length = av-1;
 
     int ret = usmSubmitAllocEvent(usmEvent);
 
@@ -100,6 +106,8 @@ static inline int usm_alloc_impl(struct usm_event *usmEvent, struct policy_funct
 
 
 static inline int usm_pindex_free_impl(struct usm_event *usmEvent, struct policy_function *policy) {
+    trace("TRACE: entering sOS::API::usm_pindex_free_impl\n");
+    trace("TRACE: exiting sOS::API::usm_pindex_free_impl\n");
     return 0;
 }
 
@@ -159,6 +167,8 @@ static inline void initResources(unsigned long resourceSize) {
 int policy_alloc_setup(unsigned int pagesNumber) {
     trace("TRACE: entering sOS::API::setup\n");
     initResources(pagesNumber);
+
+    printf("Page Size %ld\n", SYS_PAGE_SIZE);
 
     register_policy(policy1, policy1_detail)
 

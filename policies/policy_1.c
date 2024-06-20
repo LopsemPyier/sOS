@@ -79,10 +79,37 @@ int get_resources_ready_to_assign(struct list_head* resource_list, int requested
 
 static inline int policy1_select_phys_to_virtual(struct sOSEvent *event) {
     trace("TRACE: entering policy1::select_phys_to_virt\n");
+
+    if (list_empty(&freeList)) {
+        trace("TRACE: exiting policy1::select_phys_to_virt -- error empty free list\n");
+        return 1;
+    }
+
+    LIST_HEAD(tmpList);
+
+    pthread_mutex_lock(&policy1FreeLock);
+
+    struct optEludeList * chosenResource = list_first_entry(&freeList, struct optEludeList, iulist);
+
+    list_move_tail(&chosenResource->iulist, &tmpList);
+    pthread_mutex_unlock(&policy1FreeLock);
+    pthread_mutex_lock(&policy1UsedLock);
+    list_move_tail(&chosenResource->iulist, &usedList);
+    pthread_mutex_unlock(&policy1UsedLock);
+
+    event->physical_id = chosenResource->resource->physicalId;
+    chosenResource->resource->virtualId = event->virtual_id;
+    chosenResource->resource->process = event->attached_process;
+
+    trace("TRACE: exiting policy1::select_phys_to_virt\n");
+
+    return 0;
+
     struct list_head *return_list = (struct list_head*) malloc(sizeof (struct list_head)),*pagesListIterator, *tempPageItr;
 
     int wanted_number_of_resource = event->virtual_nb;
     int available_resource;
+
 
     INIT_LIST_HEAD(return_list);
 
@@ -150,6 +177,7 @@ static inline int policy1_on_yield(struct sOSEvent *event) {
     trace("TRACE: entering policy1::on_yield\n");
 
     struct optEludeList *resource_yielded;
+    pthread_mutex_lock(&policy1UsedLock);
     list_for_each_entry(resource_yielded, &usedList, iulist) {
         if (resource_yielded->resource->virtualId == event->virtual_id) {
             break;
@@ -160,6 +188,10 @@ static inline int policy1_on_yield(struct sOSEvent *event) {
         trace("TRACE: exiting policy1::on_yield -- error\n");
         return 1;
     }
+
+    LIST_HEAD(tmpList);
+    list_move(&resource_yielded->iulist, &tmpList);
+    pthread_mutex_unlock(&policy1UsedLock);
 
     pthread_mutex_lock(&policy1FreeLock);
     list_move(&resource_yielded->iulist, &freeList);
