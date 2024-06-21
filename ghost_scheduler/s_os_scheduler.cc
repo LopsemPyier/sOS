@@ -448,6 +448,7 @@ found:
     void SOSScheduler::GlobalSchedule(const StatusWord &agent_sw, BarrierToken agent_sw_last) {
         // trace("TRACE: entering ghost::scheduler::GlobalSchedule\n");
         const int global_cpu_id = GetGlobalCPUId();
+        bool sched = false;
 
         for (const Cpu& cpu : cpus()) {
             CpuState* cs = cpu_state(cpu);
@@ -469,12 +470,13 @@ found:
                 if (SOSScheduler::submitEvent(event)) {
                     policy->functions->on_yield(event);
                 }
+                sched = true;
             }
 
             free(event);
         }
 
-
-        // trace("TRACE: exiting ghost::scheduler::GlobalSchedule\n");
+        if (sched)
+            trace("TRACE: exiting ghost::scheduler::GlobalSchedule -- sched\n");
     }
 }

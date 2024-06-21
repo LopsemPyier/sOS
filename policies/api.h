@@ -11,6 +11,7 @@
 #include <stdio.h>
 #include <signal.h>
 #include <pthread.h>
+#include <limits.h>
 
 #define likely(x) __builtin_expect(!!(x), 1)
 #define unlikely(x) __builtin_expect(!!(x), 0)
@@ -73,13 +74,32 @@ struct optEludeList {
 };
 
 
+struct optVirtualResourceList {
+    struct virtual_resource * resource;
+    struct list_head iulist;
+    struct list_head proclist;
+};
+
+
 extern struct resource {
     unsigned long virtualId;
     unsigned long physicalId;
     int process;
     void *usedListPositionPointer;
     struct list_head * processUsedListPointer;
+    struct list_head * virtualResource;
 } * resourceList;
+
+
+struct virtual_resource {
+    unsigned long virtualId;
+    unsigned long physicalId;
+    int process;
+    unsigned long utilisation;
+    unsigned long last_event_id;
+};
+
+static unsigned long NO_RESOURCE = ULONG_MAX;
 
 extern pthread_mutex_t resourceListLock;
 

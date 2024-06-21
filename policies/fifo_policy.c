@@ -4,33 +4,16 @@
 
 #include "fifo_policy.h"
 
-LIST_HEAD(run_queue);
-LIST_HEAD(running_queue);
-LIST_HEAD(blocked_queue);
+LIST_HEAD(virtual_on_ressource_queue);
+LIST_HEAD(virtual_valid_queue);
+LIST_HEAD(virtual_invalid_queue);
 
 pthread_mutex_t resourceListLock;
+pthread_mutex_t virtualOnResourceQueueLock;
+pthread_mutex_t virtualValidQueueLock;
+pthread_mutex_t virtualInvalidQueueLock;
 int nb_resources;
 
-
-struct optTaskList {
-    struct task* task;
-    struct list_head iulist;
-    struct list_head proclist;
-};
-
-enum TaskState {
-    Runnable,
-    Running,
-    Blocked
-};
-
-struct task {
-    time_t last_commit;
-    time_t runtime;
-    unsigned long id;
-    unsigned long seqnum;
-    enum TaskState state;
-};
 
 
 
@@ -78,9 +61,51 @@ struct policy_detail fifo_policy_detail = {
         .is_default = true
 };
 
+struct optVirtualResourceList* get_virtual_resource(struct list_head* list, unsigned long virtualId) {
+    struct optVirtualResourceList *virtualResource;
+    list_for_each_entry(virtualResource, list, iulist) {
+        if (virtualResource->resource->virtualId == virtualId) {
+            break;
+        }
+    }
+    if (&virtualResource->iulist == list)
+        return NULL;
+    else
+        return virtualResource;
+}
+
+void move_list_safe(struct list_head * item, struct list_head * dest, pthread_mutex_t* lock1, pthread_mutex_t* lock2) {
+    LIST_HEAD(tmp);
+
+    pthread_mutex_lock(lock1);
+    list_move_tail(item, &tmp);
+    pthread_mutex_unlock(lock1);
+
+    pthread_mutex_lock(lock2);
+    list_move_tail(item, dest);
+    pthread_mutex_unlock(lock2);
+}
+
 
 static inline int fifo_policy_select_phys_to_virtual(struct sOSEvent *event) {
     trace("TRACE: entering fifo_policy::select_phys_to_virt\n");
+
+    /*struct optVirtualResourceList* virtualResource;
+    list_for_each_entry(virtualResource, &virtual_valid_queue, iulist) {
+        if (virtualResource->resource->virtualId == event->virtual_id) {
+            break;
+        }
+    }
+    if (&(virtualResource->iulist) == &virtual_valid_queue) {
+        trace("TRACE: exiting fifo_policy::select_phys_to_virt -- error\n");
+        return 1;
+    }*/
+
+    struct optVirtualResourceList* virtualResource = get_virtual_resource(&virtual_valid_queue, event->virtual_id);
+    if (!virtualResource) {
+        trace("TRACE: exiting fifo_policy::on_ready -- error\n");
+        return 1;
+    }
 
     pthread_mutex_lock(&resourceListLock);
     for (int i = 0; i < nb_resources; i++) {
@@ -88,6 +113,8 @@ static inline int fifo_policy_select_phys_to_virtual(struct sOSEvent *event) {
             resourceList[i].virtualId = event->virtual_id;
             pthread_mutex_unlock(&resourceListLock);
             event->physical_id = resourceList[i].physicalId;
+            virtualResource->resource->physicalId = event->physical_id;
+            virtualResource->resource->last_event_id = event->event_id;
             return 0;
         }
     }
@@ -112,23 +139,24 @@ static inline int fifo_policy_select_virtual_to_evict(struct sOSEvent* event) {
 static inline int fifo_policy_select_virtual_to_load(struct sOSEvent* event) {
     // trace("TRACE: entering fifo_policy::select_virtual_to_load\n");
 
-    if (list_empty(&run_queue)) {
+    if (list_empty(&virtual_valid_queue)) {
         // trace("TRACE: exiting fifo_policy::select_virtual_to_load -- empty\n");
         return 1;
     }
 
-    struct optTaskList* task = list_first_entry(&run_queue, struct optTaskList, iulist);
-
-    list_move_tail(&task->iulist, &running_queue);
+    struct optVirtualResourceList* virtualResource = list_first_entry(&virtual_valid_queue, struct optVirtualResourceList, iulist);
 
     pthread_mutex_lock(&resourceListLock);
 
-    resourceList[event->physical_id].virtualId = task->task->id;
+    resourceList[event->physical_id].virtualId = virtualResource->resource->virtualId;
+    resourceList[event->physical_id].virtualResource = &virtualResource->iulist;
 
     pthread_mutex_unlock(&resourceListLock);
 
-    event->virtual_id = task->task->id;
-    event->event_id = task->task->seqnum;
+    event->virtual_id = virtualResource->resource->virtualId;
+    event->event_id = virtualResource->resource->last_event_id;
+
+    move_list_safe(&(virtualResource->iulist), &virtual_on_ressource_queue, &virtualValidQueueLock, &virtualOnResourceQueueLock);
 
     printf("Selected task %lu to assigned to cpu %lu\n", event->virtual_id, event->physical_id);
 
@@ -151,23 +179,40 @@ static inline int fifo_policy_restore_context(struct sOSEvent* event) {
 static inline int fifo_policy_on_yield(struct sOSEvent *event) {
     trace("TRACE: entering fifo_policy::on_yield\n");
 
-    struct optTaskList* taskList;
-    list_for_each_entry(taskList, &running_queue, iulist) {
-        if (taskList->task->id == event->virtual_id) {
+    //struct optVirtualResourceList* virtualResource;
+/*    if (get_virtual_resource(virtualResource, &virtual_valid_queue, &virtualValidQueueLock, event->virtual_id)) {
+        return 1;
+    }*/
+
+    /*list_for_each_entry(virtualResource, &virtual_on_ressource_queue, iulist) {
+        if (virtualResource->resource->virtualId == event->virtual_id) {
             break;
         }
     }
-    taskList->task->state = Runnable;
-    taskList->task->seqnum = event->event_id;
-    taskList->task->runtime += time(NULL) - taskList->task->last_commit;
+    if (&(virtualResource->iulist) == &virtual_on_ressource_queue) {
+        trace("TRACE: exiting fifo_policy::on_yield -- error\n");
+        return 1;
+    }*/
 
-    list_move_tail(&(taskList->iulist), &run_queue);
+    struct optVirtualResourceList* virtualResource = get_virtual_resource(&virtual_on_ressource_queue, event->virtual_id);
+    if (!virtualResource) {
+        trace("TRACE: exiting fifo_policy::on_ready -- error\n");
+        return 1;
+    }
+
+    virtualResource->resource->last_event_id = event->event_id;
 
     pthread_mutex_lock(&resourceListLock);
 
-    resourceList[event->physical_id].virtualId = 0;
+    if (virtualResource->resource->physicalId != NO_RESOURCE)
+        resourceList[event->physical_id].virtualId = 0;
 
     pthread_mutex_unlock(&resourceListLock);
+
+    move_list_safe(&(virtualResource->iulist), &virtual_valid_queue, &virtualOnResourceQueueLock, &virtualValidQueueLock);
+
+
+    virtualResource->resource->physicalId = NO_RESOURCE;
 
     trace("TRACE: exiting fifo_policy::on_yield\n");
     return 0;
@@ -176,21 +221,31 @@ static inline int fifo_policy_on_yield(struct sOSEvent *event) {
 static inline int fifo_policy_on_ready(struct sOSEvent* event) {
     trace("TRACE: entering fifo_policy::on_ready\n");
 
-    struct optTaskList* taskList;
-    list_for_each_entry(taskList, &blocked_queue, iulist) {
-        printf("Looking at task %lu\n", taskList->task->id);
-        if (taskList->task->id == event->virtual_id) {
+    //struct optVirtualResourceList* virtualResource;
+    /*if (get_virtual_resource(virtualResource, &virtual_invalid_queue, &virtualInvalidQueueLock, event->virtual_id)) {
+        return 1;
+    }*/
+
+    /*list_for_each_entry(virtualResource, &virtual_invalid_queue, iulist) {
+        if (virtualResource->resource->virtualId == event->virtual_id) {
             break;
         }
     }
-
-    if (&(taskList->iulist) == &blocked_queue)
+    if (&(virtualResource->iulist) == &virtual_invalid_queue) {
+        trace("TRACE: exiting fifo_policy::on_ready -- error\n");
         return 1;
+    }*/
+    struct optVirtualResourceList* virtualResource = get_virtual_resource(&virtual_invalid_queue, event->virtual_id);
+    if (!virtualResource) {
+        trace("TRACE: exiting fifo_policy::on_ready -- error\n");
+        return 1;
+    }
 
-    taskList->task->state = Runnable;
-    taskList->task->seqnum = event->event_id;
+    virtualResource->resource->last_event_id = event->event_id;
+    virtualResource->resource->physicalId = NO_RESOURCE;
 
-    list_move_tail(&(taskList->iulist), &run_queue);
+    move_list_safe(&(virtualResource->iulist), &virtual_valid_queue, &virtualInvalidQueueLock, &virtualValidQueueLock);
+
 
     trace("TRACE: exiting fifo_policy::on_ready\n");
     return 0;
@@ -199,34 +254,52 @@ static inline int fifo_policy_on_ready(struct sOSEvent* event) {
 static inline int fifo_policy_on_invalid(struct sOSEvent* event) {
     trace("TRACE: entering fifo_policy::on_invalid\n");
 
-    struct optTaskList* taskList;
-    list_for_each_entry(taskList, &running_queue, iulist) {
-        if (taskList->task->id == event->virtual_id) {
+    //struct optVirtualResourceList* virtualResource;
+
+    bool on_resource = true;
+    struct optVirtualResourceList* virtualResource = get_virtual_resource(&virtual_on_ressource_queue, event->virtual_id);
+    if (!virtualResource) {
+        on_resource = false;
+        virtualResource = get_virtual_resource(&virtual_valid_queue, event->virtual_id);
+        if(!virtualResource) {
+            trace("TRACE: exiting fifo_policy::on_ready -- error\n");
+            return 1;
+        }
+    }
+
+/*    list_for_each_entry(virtualResource, &virtual_on_ressource_queue, iulist) {
+        if (virtualResource->resource->virtualId == event->virtual_id) {
             break;
         }
     }
-    if (&(taskList->iulist) == &running_queue) {
-        list_for_each_entry(taskList, &run_queue, iulist) {
-            if (taskList->task->id == event->virtual_id) {
+    if (&(virtualResource->iulist) == &virtual_on_ressource_queue) {
+        on_resource = false;
+        list_for_each_entry(virtualResource, &virtual_valid_queue, iulist) {
+            if (virtualResource->resource->virtualId == event->virtual_id) {
                 break;
             }
         }
-    }
+        if (&(virtualResource->iulist) == &virtual_valid_queue) {
+            trace("TRACE: exiting fifo_policy::on_invalid -- error\n");
+            return 1;
+        }
+    }*/
 
-    if (&(taskList->iulist) == &run_queue)
-        return 1;
-
-    taskList->task->state = Blocked;
-    taskList->task->seqnum = event->event_id;
-    taskList->task->runtime += time(NULL) - taskList->task->last_commit;
-
-    list_move_tail(&(taskList->iulist), &blocked_queue);
+    virtualResource->resource->last_event_id = event->event_id;
 
     pthread_mutex_lock(&resourceListLock);
 
-    resourceList[event->physical_id].virtualId = 0;
+    if (virtualResource->resource->physicalId != NO_RESOURCE)
+        resourceList[event->physical_id].virtualId = 0;
 
     pthread_mutex_unlock(&resourceListLock);
+
+    virtualResource->resource->physicalId = NO_RESOURCE;
+
+    if (on_resource)
+        move_list_safe(&(virtualResource->iulist), &virtual_invalid_queue, &virtualOnResourceQueueLock, &virtualInvalidQueueLock);
+    else
+        move_list_safe(&(virtualResource->iulist), &virtual_invalid_queue, &virtualValidQueueLock, &virtualInvalidQueueLock);
 
     trace("TRACE: exiting fifo_policy::on_invalid\n");
     return 0;
@@ -247,18 +320,21 @@ static inline int fifo_policy_on_protection_violation(struct sOSEvent* event) {
 static inline int fifo_policy_on_create_thread(struct sOSEvent* event) {
     trace("TRACE: entering fifo_policy::on_create_thread\n");
 
-    struct optTaskList* taskList = (struct optTaskList*) malloc(sizeof (struct optTaskList));
+    struct optVirtualResourceList* virtualResource = (struct optVirtualResourceList*) malloc(sizeof (struct optVirtualResourceList));
 
-    INIT_LIST_HEAD(&(taskList->iulist));
+    INIT_LIST_HEAD(&(virtualResource->iulist));
 
-    taskList->task = (struct task*) malloc(sizeof (struct task));
+    virtualResource->resource = (struct virtual_resource*) malloc(sizeof (struct virtual_resource));
 
-    taskList->task->runtime = 0;
-    taskList->task->last_commit = time(NULL);
-    taskList->task->id = event->virtual_id;
-    taskList->task->state = Blocked;
+    virtualResource->resource->physicalId = NO_RESOURCE;
+    virtualResource->resource->virtualId = event->virtual_id;
+    virtualResource->resource->last_event_id = event->event_id;
+    virtualResource->resource->process = event->attached_process;
+    virtualResource->resource->utilisation = 0;
 
-    list_add_tail(&(taskList->iulist), &blocked_queue);
+    pthread_mutex_lock(&virtualInvalidQueueLock);
+    list_add_tail(&(virtualResource->iulist), &virtual_invalid_queue);
+    pthread_mutex_unlock(&virtualInvalidQueueLock);
 
     trace("TRACE: exiting fifo_policy::on_create_thread\n");
     return 0;
@@ -267,35 +343,58 @@ static inline int fifo_policy_on_create_thread(struct sOSEvent* event) {
 static inline int fifo_policy_on_dead_thread(struct sOSEvent* event) {
     trace("TRACE: entering fifo_policy::on_dead_thread\n");
 
-    struct optTaskList* taskList;
-    list_for_each_entry(taskList, &running_queue, iulist) {
-        if (taskList->task->id == event->virtual_id) {
+    /*struct optVirtualResourceList* virtualResource;
+
+
+    list_for_each_entry(virtualResource, &virtual_on_ressource_queue, iulist) {
+        if (virtualResource->resource->virtualId == event->virtual_id) {
             break;
         }
     }
-
-    if (&(taskList->iulist) == &running_queue) {
-        list_for_each_entry(taskList, &run_queue, iulist) {
-            if (taskList->task->id == event->virtual_id) {
+    if (&(virtualResource->iulist) == &virtual_on_ressource_queue) {
+        list_for_each_entry(virtualResource, &virtual_valid_queue, iulist) {
+            if (virtualResource->resource->virtualId == event->virtual_id) {
                 break;
             }
         }
-    }
-    if (&(taskList->iulist) == &run_queue) {
-        list_for_each_entry(taskList, &blocked_queue, iulist) {
-            if (taskList->task->id == event->virtual_id) {
-                break;
+        if (&(virtualResource->iulist) == &virtual_valid_queue) {
+            list_for_each_entry(virtualResource, &virtual_invalid_queue, iulist) {
+                if (virtualResource->resource->virtualId == event->virtual_id) {
+                    break;
+                }
+            }
+            if (&(virtualResource->iulist) == &virtual_invalid_queue) {
+                trace("TRACE: exiting fifo_policy::on_dead_thread -- error\n");
+                return 1;
             }
         }
-    }
-    if (&(taskList->iulist) == &blocked_queue) {
-        return 1;
+    }*/
+    struct optVirtualResourceList* virtualResource = get_virtual_resource(&virtual_on_ressource_queue, event->virtual_id);
+    if (!virtualResource) {
+        virtualResource = get_virtual_resource(&virtual_valid_queue, event->virtual_id);
+        if (!virtualResource) {
+            virtualResource = get_virtual_resource(&virtual_invalid_queue, event->virtual_id);
+            if (!virtualResource) {
+                trace("TRACE: exiting fifo_policy::on_dead_thread -- error\n");
+                return 1;
+            } else {
+                pthread_mutex_lock(&virtualInvalidQueueLock);
+                list_del(&(virtualResource->iulist));
+                pthread_mutex_unlock(&virtualInvalidQueueLock);
+            }
+        } else {
+            pthread_mutex_lock(&virtualValidQueueLock);
+            list_del(&(virtualResource->iulist));
+            pthread_mutex_unlock(&virtualValidQueueLock);
+        }
+    } else {
+        pthread_mutex_lock(&virtualOnResourceQueueLock);
+        list_del(&(virtualResource->iulist));
+        pthread_mutex_unlock(&virtualOnResourceQueueLock);
     }
 
-    list_del(&(taskList->iulist));
-
-    free(taskList->task);
-    free(taskList);
+    free(virtualResource->resource);
+    free(virtualResource);
 
     trace("TRACE: exiting fifo_policy::on_dead_thread\n");
     return 0;
@@ -318,6 +417,8 @@ static inline int fifo_policy_init(unsigned long numberOfResource) {
 
     nb_resources = numberOfResource;
     pthread_mutex_init(&resourceListLock, NULL);
+    pthread_mutex_init(&virtualValidQueueLock, NULL);
+    pthread_mutex_init(&virtualInvalidQueueLock, NULL);
 
     trace("TRACE: exiting fifo_policy::init\n");
     return 0;
@@ -329,12 +430,21 @@ void fifo_policy_exit() {
 
     struct list_head *listIter, *listIter_s;
 
-    list_for_each_safe(listIter, listIter_s, &run_queue) {
-        struct optTaskList* node = list_entry(listIter, struct optTaskList, iulist);
+    list_for_each_safe(listIter, listIter_s, &virtual_valid_queue) {
+        struct optVirtualResourceList* node = list_entry(listIter, struct optVirtualResourceList, iulist);
 
         list_del(listIter);
 
-        free(node->task);
+        free(node->resource);
+        free(node);
+    }
+
+    list_for_each_safe(listIter, listIter_s, &virtual_invalid_queue) {
+        struct optVirtualResourceList* node = list_entry(listIter, struct optVirtualResourceList, iulist);
+
+        list_del(listIter);
+
+        free(node->resource);
         free(node);
     }
 
