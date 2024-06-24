@@ -11,7 +11,8 @@ pthread_mutex_t policy1FreeLock;
 void put_resource_to_used_list(struct list_head* pages, unsigned long addr, int origin) {
     struct optEludeList *node, *node_s;
     list_for_each_entry_safe(node, node_s, pages, iulist) {
-        node->resource->virtualId = addr;
+        node->resource->virtualResource = NULL;
+        // node->resource->virtualId = addr;
         node->resource->process = origin;
         pthread_mutex_lock(&policy1UsedLock);
         list_move_tail(&node->iulist, &usedList);
@@ -98,7 +99,8 @@ static inline int policy1_select_phys_to_virtual(struct sOSEvent *event) {
     pthread_mutex_unlock(&policy1UsedLock);
 
     event->physical_id = chosenResource->resource->physicalId;
-    chosenResource->resource->virtualId = event->virtual_id;
+    chosenResource->resource->virtualResource = NULL;
+    // chosenResource->resource->virtualId = event->virtual_id;
     chosenResource->resource->process = event->attached_process;
 
     trace("TRACE: exiting policy1::select_phys_to_virt\n");

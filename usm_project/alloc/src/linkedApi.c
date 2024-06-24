@@ -50,7 +50,7 @@ static inline int usm_alloc_impl(struct usm_event *usmEvent, struct policy_funct
 
     event->attached_process = usmEvent->origin;
     event->virtual_id = usmEvent->vaddr;
-    event->eventPosition = &(optEvent->iulist);
+    event->event_id = 0;
 
     printf("Created sOSEvent\n");
     printf("Allocation of vaddr %ld to paddr %ld\n", usmEvent->vaddr, usmEvent->paddr);
@@ -60,6 +60,8 @@ static inline int usm_alloc_impl(struct usm_event *usmEvent, struct policy_funct
     usmEvent->paddr = 0;
     int vpfn = -1, pfn, pos = 0, count = 0;
     while (req > 0) {
+        policy->on_create_thread(event);
+        policy->on_ready(event);
         if (policy->select_phys_to_virtual(event)) {
             trace("TRACE: exiting sOS::API::usm_alloc_impl -- error\n");
             return 1;
@@ -152,6 +154,7 @@ static inline void hold_used_pages_impl(struct list_head* pages) {
 }
 
 create_usm_bindings(policy1, policy1_detail)
+create_usm_bindings(fifo, fifo_policy_detail)
 
 
 static inline void initResources(unsigned long resourceSize) {
@@ -171,9 +174,14 @@ int policy_alloc_setup(unsigned int pagesNumber) {
     printf("Page Size %ld\n", SYS_PAGE_SIZE);
 
     register_policy(policy1, policy1_detail)
-
-    if (policy1_detail.functions->init)
+    if (policy1_detail.functions->init) {
         policy1_detail.functions->init(pagesNumber);
+    }
+
+    register_policy(fifo, fifo_policy_detail)
+    if (fifo_policy_detail.functions->init) {
+        fifo_policy_detail.functions->init(pagesNumber);
+    }
 
     get_pages=&get_pages_impl;
     put_pages=&put_pages_impl;

@@ -12,6 +12,7 @@
 #include <signal.h>
 #include <pthread.h>
 #include <limits.h>
+#include <sys/time.h>
 
 #define likely(x) __builtin_expect(!!(x), 1)
 #define unlikely(x) __builtin_expect(!!(x), 0)
@@ -29,6 +30,27 @@ static const bool enable_api_trace = false;
 
 extern int VIRTUAL_RESOURCE_SIZE;
 extern int nb_resources;
+
+enum eventType {
+    INIT,
+    EXIT,
+
+    SELECT_PHYS_TO_VIRTUAL,
+    SELECT_VIRTUAL_TO_EVICT,
+    SELECT_VIRTUAL_TO_LOAD,
+    SAVE_CONTEXT,
+    RESTORE_CONTEXT,
+
+    ON_YIELD,
+    ON_READY,
+    ON_INVALID,
+    ON_HINTS,
+    ON_PROTECTION_VIOLATION,
+    ON_CREATE_THREAD,
+    ON_DEAD_THREAD,
+    ON_SLEEP_STATE_CHANGE,
+    ON_SIGNAL
+};
 
 struct sOSEvent {
     unsigned long virtual_id;
@@ -82,18 +104,19 @@ struct optVirtualResourceList {
 
 
 extern struct resource {
-    unsigned long virtualId;
     unsigned long physicalId;
+    unsigned long virtualId;
     int process;
     void *usedListPositionPointer;
     struct list_head * processUsedListPointer;
-    struct list_head * virtualResource;
+    struct optVirtualResourceList * virtualResource;
+    pthread_mutex_t lock;
 } * resourceList;
 
 
 struct virtual_resource {
     unsigned long virtualId;
-    unsigned long physicalId;
+    struct optEludeList * physical_resource;
     int process;
     unsigned long utilisation;
     unsigned long last_event_id;
@@ -106,7 +129,7 @@ extern pthread_mutex_t resourceListLock;
 
 static inline void insertResource(struct resource **resourceList, unsigned long physicalId, int pos) {
     ((*resourceList)+pos)->physicalId = physicalId;
-    ((*resourceList)+pos)->virtualId = 0;
+    ((*resourceList)+pos)->virtualResource = NULL;
     ((*resourceList)+pos)->process = 0;
 }
 
@@ -115,6 +138,83 @@ struct p_args_p {
     unsigned long addr;
     struct list_head *l_ps;
 };
+
+
+extern char const *filename;
+
+static void init_statistics() {
+    FILE *fptr;
+    fptr = fopen(filename, "w");
+    fclose(fptr);
+}
+
+static void add_event(struct sOSEvent* event, enum eventType eventType, struct timespec start, struct timespec end) {
+    FILE *fptr;
+    fptr = fopen(filename, "a");
+
+    fprintf(fptr, "%ld;", start.tv_sec * 1000000000 + start.tv_nsec);
+    fprintf(fptr, "%ld;", (end.tv_sec - start.tv_sec) * 1000000000 + (end.tv_nsec - start.tv_nsec));
+    switch (eventType) {
+        case INIT:
+            fprintf(fptr, "%s;", "INIT");
+            break;
+        case EXIT:
+            fprintf(fptr, "%s;", "EXIT");
+            break;
+
+        case SELECT_PHYS_TO_VIRTUAL:
+            fprintf(fptr, "%s;", "SELECT_PHYS_TO_VIRTUAL");
+            break;
+        case SELECT_VIRTUAL_TO_EVICT:
+            fprintf(fptr, "%s;", "SELECT_VIRTUAL_TO_EVICT");
+            break;
+        case SELECT_VIRTUAL_TO_LOAD:
+            fprintf(fptr, "%s;", "SELECT_VIRTUAL_TO_LOAD");
+            break;
+        case SAVE_CONTEXT:
+            fprintf(fptr, "%s;", "SAVE_CONTEXT");
+            break;
+        case RESTORE_CONTEXT:
+            fprintf(fptr, "%s;", "RESTORE_CONTEXT");
+            break;
+
+        case ON_YIELD:
+            fprintf(fptr, "%s;", "ON_YIELD");
+            break;
+        case ON_READY:
+            fprintf(fptr, "%s;", "ON_READY");
+            break;
+        case ON_INVALID:
+            fprintf(fptr, "%s;", "ON_INVALID");
+            break;
+        case ON_HINTS:
+            fprintf(fptr, "%s;", "ON_HINTS");
+            break;
+        case ON_PROTECTION_VIOLATION:
+            fprintf(fptr, "%s;", "ON_PROTECTION_VIOLATION");
+            break;
+        case ON_CREATE_THREAD:
+            fprintf(fptr, "%s;", "ON_CREATE_THREAD");
+            break;
+        case ON_DEAD_THREAD:
+            fprintf(fptr, "%s;", "ON_DEAD_THREAD");
+            break;
+        case ON_SLEEP_STATE_CHANGE:
+            fprintf(fptr, "%s;", "ON_SLEEP_STATE_CHANGE");
+            break;
+        case ON_SIGNAL:
+            fprintf(fptr, "%s;", "ON_SIGNAL");
+            break;
+    }
+    if (event) {
+        fprintf(fptr, "%lu;%lu;%du;%lu", event->virtual_id, event->physical_id, event->attached_process, event->event_id);
+    } else {
+        fprintf(fptr, ";;;");
+
+    }
+    fprintf(fptr, "\n");
+    fclose(fptr);
+}
 
 extern int submitResourceList(struct sOSEvent* event, struct list_head* resource_to_submit);
 
