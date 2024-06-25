@@ -58,6 +58,8 @@ namespace ghost {
             CHECK_NE(cs->agent, nullptr);
         }
 
+        policy->functions->init(MAX_CPUS);
+
         trace("TRACE: exiting ghost::scheduler::EnclaveReady\n");
     }
 
@@ -71,11 +73,8 @@ namespace ghost {
 
     int SOSScheduler::submitEvent(struct sOSEvent *event) {
         trace("TRACE: entering ghost::scheduler::submitEvent\n");
-        CpuList found_cpu = topology()->EmptyCpuList();
 
-        found_cpu.Set(event->physical_id);
-
-        const Cpu& cpu = found_cpu.Front();
+        const Cpu& cpu = topology()->cpu(event->physical_id);
 
         RunRequest* req = enclave()->GetRunRequest(cpu);
         printf("Submitting virtual %lu to physical %lu\n", event->virtual_id, event->physical_id);
@@ -85,12 +84,10 @@ namespace ghost {
                           // not checked when a global agent is scheduling a CPU other than
                           // the one that the global agent is currently running on.
                           .commit_flags = COMMIT_AT_TXN_COMMIT});
-        found_cpu.Clear(cpu);
-        found_cpu.Set(cpu);
 
-        enclave()->CommitRunRequests(found_cpu);
-        req = enclave()->GetRunRequest(cpu);
-        if (req->succeeded()) {
+        /*enclave()->CommitRunRequests(found_cpu);
+        req = enclave()->GetRunRequest(cpu);*/
+        if (req->Commit()) {
             trace("TRACE: exiting ghost::scheduler::submitEvent\n");
             return 0;
         }
@@ -158,6 +155,22 @@ found:
         if (prev) {
             CHECK(prev->oncpu());
         }
+
+        printf("Set new global cpu %d\n", target.id());
+
+        struct sOSEvent* event = (struct sOSEvent*) malloc(sizeof(struct sOSEvent));
+
+        event->physical_id = GetGlobalCPUId();
+        event->sleep = AVAILABLE;
+
+        policy->functions->on_sleep_state_change(event);
+
+        event->physical_id = target.id();
+        event->sleep = BUSY;
+
+        policy->functions->on_sleep_state_change(event);
+
+        free(event);
 
         SetGlobalCPU(target);
         enclave()->GetAgent(target)->Ping();
@@ -253,6 +266,15 @@ found:
 
         if (payload->runnable) {
             policy->functions->on_ready(event);
+
+            if (!policy->functions->select_phys_to_virtual(event)) {
+                if (submitEvent(event)) {
+                    policy->functions->on_yield(event);
+                } else {
+                    CpuState* cs = cpu_state(topology()->cpu(event->physical_id));
+                    cs->used = true;
+                }
+            }
         }
 
         free(event);
@@ -271,6 +293,15 @@ found:
 
         policy->functions->on_ready(event);
 
+        if (!policy->functions->select_phys_to_virtual(event)) {
+            if (submitEvent(event)) {
+                policy->functions->on_yield(event);
+            } else {
+                CpuState* cs = cpu_state(topology()->cpu(event->physical_id));
+                cs->used = true;
+            }
+        }
+
         free(event);
 
         trace("TRACE: exiting ghost::scheduler::TaskRunnable\n");
@@ -278,6 +309,9 @@ found:
 
     void SOSScheduler::TaskDead(ghost::SOSTask *task, const ghost::Message &msg) {
         trace("TRACE: entering ghost::scheduler::TaskDead\n");
+
+        const ghost_msg_payload_task_dead* payload =
+                static_cast<const ghost_msg_payload_task_dead*>(msg.payload());
 
         struct sOSEvent* event = (struct sOSEvent*) malloc(sizeof(struct sOSEvent));
 
@@ -288,6 +322,9 @@ found:
         event->event_id = msg.seqnum();
 
         policy->functions->on_dead_thread(event);
+
+        CpuState* cs = cpu_state(topology()->cpu(payload->cpu));
+        cs->used = false;
 
         free(event);
 
@@ -297,6 +334,9 @@ found:
     void SOSScheduler::TaskDeparted(ghost::SOSTask *task, const ghost::Message &msg) {
         trace("TRACE: entering ghost::scheduler::TaskDeparted\n");
 
+        const ghost_msg_payload_task_departed* payload =
+                static_cast<const ghost_msg_payload_task_departed*>(msg.payload());
+
         struct sOSEvent* event = (struct sOSEvent*) malloc(sizeof(struct sOSEvent));
 
         event->virtual_id = task->gtid.id();
@@ -306,6 +346,9 @@ found:
 
         policy->functions->on_dead_thread(event);
 
+        CpuState* cs = cpu_state(topology()->cpu(payload->cpu));
+        cs->used = false;
+
         free(event);
 
         trace("TRACE: exiting ghost::scheduler::TaskDeparted\n");
@@ -314,14 +357,20 @@ found:
     void SOSScheduler::TaskYield(ghost::SOSTask *task, const ghost::Message &msg) {
         trace("TRACE: entering ghost::scheduler::TaskYield\n");
 
+        const ghost_msg_payload_task_yield* payload =
+                static_cast<const ghost_msg_payload_task_yield*>(msg.payload());
+
         struct sOSEvent* event = (struct sOSEvent*) malloc(sizeof(struct sOSEvent));
 
-        event->virtual_id = task->gtid.id();
+        event->virtual_id = payload->gtid;
         if (task->oncpu())
-            event->physical_id = task->cpu.id();
+            event->physical_id = payload->cpu;
         event->event_id = msg.seqnum();
 
         policy->functions->on_yield(event);
+
+        CpuState* cs = cpu_state(topology()->cpu(payload->cpu));
+        cs->used = false;
 
         free(event);
 
@@ -331,14 +380,20 @@ found:
     void SOSScheduler::TaskBlocked(ghost::SOSTask *task, const ghost::Message &msg) {
         trace("TRACE: entering ghost::scheduler::TaskBlocked\n");
 
+        const ghost_msg_payload_task_blocked* payload =
+                static_cast<const ghost_msg_payload_task_blocked*>(msg.payload());
+
         struct sOSEvent* event = (struct sOSEvent*) malloc(sizeof(struct sOSEvent));
 
-        event->virtual_id = task->gtid.id();
+        event->virtual_id = payload->gtid;
         if (task->oncpu())
-            event->physical_id = task->cpu.id();
+            event->physical_id = payload->cpu;
         event->event_id = msg.seqnum();
 
         policy->functions->on_invalid(event);
+
+        CpuState* cs = cpu_state(topology()->cpu(payload->cpu));
+        cs->used = false;
 
         free(event);
 
@@ -347,15 +402,20 @@ found:
 
     void SOSScheduler::TaskPreempted(ghost::SOSTask *task, const ghost::Message &msg) {
         trace("TRACE: entering ghost::scheduler::TaskPreempted\n");
+        const ghost_msg_payload_task_preempt* payload =
+                static_cast<const ghost_msg_payload_task_preempt*>(msg.payload());
 
         struct sOSEvent* event = (struct sOSEvent*) malloc(sizeof(struct sOSEvent));
 
-        event->virtual_id = task->gtid.id();
+        event->virtual_id = payload->gtid;
         if (task->oncpu())
-            event->physical_id = task->cpu.id();
+            event->physical_id = payload->cpu;
         event->event_id = msg.seqnum();
 
         policy->functions->on_yield(event);
+
+        CpuState* cs = cpu_state(topology()->cpu(payload->cpu));
+        cs->used = false;
 
         free(event);
 
@@ -400,10 +460,19 @@ found:
 
     void SOSScheduler::TaskOnCpu(ghost::SOSTask *task, const ghost::Message &msg) {
         trace("TRACE: entering ghost::scheduler::TaskOnCpu\n");
+        const ghost_msg_payload_task_on_cpu* payload =
+                static_cast<const ghost_msg_payload_task_on_cpu*>(msg.payload());
 
         struct sOSEvent* event = (struct sOSEvent*) malloc(sizeof(struct sOSEvent));
 
-        policy->functions->on_signal(event);
+        event->event_id = msg.seqnum();
+        event->physical_id = payload->cpu;
+        event->virtual_id = payload->gtid;
+
+        policy->functions->restore_context(event);
+
+        CpuState* cs = cpu_state(topology()->cpu(payload->cpu));
+        cs->used = true;
 
         free(event);
 
@@ -427,11 +496,37 @@ found:
 
     void SOSScheduler::CpuAvailable(const ghost::Message &msg) {
         trace("TRACE: entering ghost::scheduler::CpuAvailable\n");
+        const ghost_msg_payload_cpu_available* payload =
+                static_cast<const ghost_msg_payload_cpu_available*>(msg.payload());
+
+        struct sOSEvent* event = (struct sOSEvent*) malloc(sizeof(struct sOSEvent));
+
+        event->event_id = msg.seqnum();
+        event->physical_id = payload->cpu;
+        event->sleep = AVAILABLE;
+
+        policy->functions->on_sleep_state_change(event);
+
+        free(event);
+
         trace("TRACE: exiting ghost::scheduler::CpuAvailable\n");
     }
 
     void SOSScheduler::CpuBusy(const ghost::Message &msg) {
         trace("TRACE: entering ghost::scheduler::CpuBusy\n");
+        const ghost_msg_payload_cpu_busy* payload =
+                static_cast<const ghost_msg_payload_cpu_busy*>(msg.payload());
+
+        struct sOSEvent* event = (struct sOSEvent*) malloc(sizeof(struct sOSEvent));
+
+        event->event_id = msg.seqnum();
+        event->physical_id = payload->cpu;
+        event->sleep = BUSY;
+
+        policy->functions->on_sleep_state_change(event);
+
+        free(event);
+
         trace("TRACE: exiting ghost::scheduler::CpuBusy\n");
     }
 
@@ -467,9 +562,12 @@ found:
             event->event_id = agent_sw_last;
 
             if(!policy->functions->select_virtual_to_load(event)) {
+                printf("The global_cpu_id is %d while cpu id is %d\n", global_cpu_id, cpu.id());
                 if (SOSScheduler::submitEvent(event)) {
                     policy->functions->on_yield(event);
-                }
+                    cs->used = false;
+                } else
+                    cs->used = true;
                 sched = true;
             }
 

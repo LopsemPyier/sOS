@@ -7,5 +7,6 @@
 
 #include "policy_1.h"
 #include "fifo_policy.h"
+#include "rr_policy.h"
 
 #endif //SOS_POLICIES_H

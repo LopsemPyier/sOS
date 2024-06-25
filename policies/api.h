@@ -52,6 +52,11 @@ enum eventType {
     ON_SIGNAL
 };
 
+enum sleepType {
+    BUSY,
+    AVAILABLE
+};
+
 struct sOSEvent {
     unsigned long virtual_id;
     unsigned long physical_id;
@@ -59,6 +64,7 @@ struct sOSEvent {
     unsigned int attached_process;
     unsigned long event_id;
     struct list_head* eventPosition;
+    enum sleepType sleep;
 };
 
 struct policy_function {

@@ -114,10 +114,11 @@ namespace ghost {
         static const int kDebugRunqueue = 1;
 
     private:
-        struct policy_detail* policy = &fifo_policy_detail;
+        struct policy_detail* policy = &rr_policy_detail;
 
         struct CpuState {
             SOSTask * current = nullptr;
+            bool used = false;
             const Agent* agent = nullptr;
         } ABSL_CACHELINE_ALIGNED;
 

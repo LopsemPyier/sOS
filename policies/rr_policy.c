@@ -2,7 +2,7 @@
 // Created by nathan on 19/06/24.
 //
 
-#include "fifo_policy.h"
+#include "rr_policy.h"
 
 LIST_HEAD(virtual_on_ressource_queue);
 LIST_HEAD(virtual_valid_queue);
@@ -22,47 +22,47 @@ int nb_resources;
 
 
 
-static inline int fifo_policy_select_phys_to_virtual(struct sOSEvent *event);
-static inline int fifo_policy_select_virtual_to_evict(struct sOSEvent *event); // TODO:
-static inline int fifo_policy_select_virtual_to_load(struct sOSEvent *event);
-static inline int fifo_policy_save_context(struct sOSEvent *event); // TODO:
-static inline int fifo_policy_restore_context(struct sOSEvent *event); // TODO:
-static inline int fifo_policy_on_yield(struct sOSEvent *event);
-static inline int fifo_policy_on_ready(struct sOSEvent *event);
-static inline int fifo_policy_on_invalid(struct sOSEvent *event);
-static inline int fifo_policy_on_hints(struct sOSEvent *event); // TODO:
-static inline int fifo_policy_on_protection_violation(struct sOSEvent *event); // TODO:
-static inline int fifo_policy_on_create_thread(struct sOSEvent *event);
-static inline int fifo_policy_on_dead_thread(struct sOSEvent *event);
-static inline int fifo_policy_on_sleep_state_change(struct sOSEvent *event); // TODO:
-static inline int fifo_policy_on_signal(struct sOSEvent *event); // TODO:
-static inline int fifo_policy_init(unsigned long numberOfResource);
-static inline void fifo_policy_exit();
+static inline int rr_policy_select_phys_to_virtual(struct sOSEvent *event);
+static inline int rr_policy_select_virtual_to_evict(struct sOSEvent *event); // TODO:
+static inline int rr_policy_select_virtual_to_load(struct sOSEvent *event);
+static inline int rr_policy_save_context(struct sOSEvent *event); // TODO:
+static inline int rr_policy_restore_context(struct sOSEvent *event); // TODO:
+static inline int rr_policy_on_yield(struct sOSEvent *event);
+static inline int rr_policy_on_ready(struct sOSEvent *event);
+static inline int rr_policy_on_invalid(struct sOSEvent *event);
+static inline int rr_policy_on_hints(struct sOSEvent *event); // TODO:
+static inline int rr_policy_on_protection_violation(struct sOSEvent *event); // TODO:
+static inline int rr_policy_on_create_thread(struct sOSEvent *event);
+static inline int rr_policy_on_dead_thread(struct sOSEvent *event);
+static inline int rr_policy_on_sleep_state_change(struct sOSEvent *event); // TODO:
+static inline int rr_policy_on_signal(struct sOSEvent *event); // TODO:
+static inline int rr_policy_init(unsigned long numberOfResource);
+static inline void rr_policy_exit();
 
-struct policy_function fifo_policy_functions = {
-        .select_phys_to_virtual = &fifo_policy_select_phys_to_virtual,
-        .select_virtual_to_evict = &fifo_policy_select_virtual_to_evict,
-        .select_virtual_to_load = &fifo_policy_select_virtual_to_load,
-        .save_context = &fifo_policy_save_context,
-        .restore_context = &fifo_policy_restore_context,
+struct policy_function rr_policy_functions = {
+        .select_phys_to_virtual = &rr_policy_select_phys_to_virtual,
+        .select_virtual_to_evict = &rr_policy_select_virtual_to_evict,
+        .select_virtual_to_load = &rr_policy_select_virtual_to_load,
+        .save_context = &rr_policy_save_context,
+        .restore_context = &rr_policy_restore_context,
 
-        .on_yield = &fifo_policy_on_yield,
-        .on_ready = &fifo_policy_on_ready,
-        .on_invalid = &fifo_policy_on_invalid,
-        .on_hints = &fifo_policy_on_hints,
-        .on_protection_violation = &fifo_policy_on_protection_violation,
-        .on_create_thread = &fifo_policy_on_create_thread,
-        .on_dead_thread = &fifo_policy_on_dead_thread,
-        .on_sleep_state_change = &fifo_policy_on_sleep_state_change,
-        .on_signal = &fifo_policy_on_signal,
+        .on_yield = &rr_policy_on_yield,
+        .on_ready = &rr_policy_on_ready,
+        .on_invalid = &rr_policy_on_invalid,
+        .on_hints = &rr_policy_on_hints,
+        .on_protection_violation = &rr_policy_on_protection_violation,
+        .on_create_thread = &rr_policy_on_create_thread,
+        .on_dead_thread = &rr_policy_on_dead_thread,
+        .on_sleep_state_change = &rr_policy_on_sleep_state_change,
+        .on_signal = &rr_policy_on_signal,
 
-        .init = &fifo_policy_init,
-        .exit = &fifo_policy_exit,
+        .init = &rr_policy_init,
+        .exit = &rr_policy_exit,
 };
 
-struct policy_detail fifo_policy_detail = {
-        .name = "fifoPolicy",
-        .functions = &fifo_policy_functions,
+struct policy_detail rr_policy_detail = {
+        .name = "rrPolicy",
+        .functions = &rr_policy_functions,
         .is_default = true
 };
 
@@ -125,8 +125,8 @@ void put_virtual_off_physical(struct optVirtualResourceList* virtual, struct opt
 }
 
 
-static inline int fifo_policy_select_phys_to_virtual(struct sOSEvent *event) {
-    trace("TRACE: entering fifo_policy::select_phys_to_virt\n");
+static inline int rr_policy_select_phys_to_virtual(struct sOSEvent *event) {
+    trace("TRACE: entering rr_policy::select_phys_to_virt\n");
 
     struct timespec start, end;
     clock_gettime(CLOCK_MONOTONIC_RAW, &start);
@@ -134,12 +134,12 @@ static inline int fifo_policy_select_phys_to_virtual(struct sOSEvent *event) {
 
     struct optVirtualResourceList* virtualResource = get_virtual_resource(&virtual_valid_queue, event->virtual_id);
     if (!virtualResource) {
-        trace("TRACE: exiting fifo_policy::select_phys_to_virt -- error virtual not found\n");
+        trace("TRACE: exiting rr_policy::select_phys_to_virt -- error virtual not found\n");
         return 1;
     }
 
     if (list_empty(&physical_free_list)) {
-        trace("TRACE: exiting fifo_policy::select_phys_to_virt -- error no free physical\n");
+        trace("TRACE: exiting rr_policy::select_phys_to_virt -- error no free physical\n");
         return 1;
     }
 
@@ -157,40 +157,49 @@ static inline int fifo_policy_select_phys_to_virtual(struct sOSEvent *event) {
     clock_gettime(CLOCK_MONOTONIC_RAW, &end);
     add_event(event, SELECT_PHYS_TO_VIRTUAL, start, end);
 
-    trace("TRACE: exiting fifo_policy::select_phys_to_virt\n");
+    trace("TRACE: exiting rr_policy::select_phys_to_virt\n");
     return 0;
 }
 
-static inline int fifo_policy_select_virtual_to_evict(struct sOSEvent* event) {
-    trace("TRACE: entering fifo_policy::select_virtual_to_evict\n");
+static inline int rr_policy_select_virtual_to_evict(struct sOSEvent* event) {
+    trace("TRACE: entering rr_policy::select_virtual_to_evict\n");
     struct timespec start, end;
     clock_gettime(CLOCK_MONOTONIC_RAW, &start);
 
     clock_gettime(CLOCK_MONOTONIC_RAW, &end);
     add_event(event, SELECT_VIRTUAL_TO_EVICT, start, end);
 
-    trace("TRACE: exiting fifo_policy::select_virtual_to_evict\n");
+    trace("TRACE: exiting rr_policy::select_virtual_to_evict\n");
     return 0;
 }
 
-static inline int fifo_policy_select_virtual_to_load(struct sOSEvent* event) {
-    // trace("TRACE: entering fifo_policy::select_virtual_to_load\n");
+static inline int rr_policy_select_virtual_to_load(struct sOSEvent* event) {
+    // trace("TRACE: entering rr_policy::select_virtual_to_load\n");
     struct timespec start, end;
     clock_gettime(CLOCK_MONOTONIC_RAW, &start);
 
     if (list_empty(&virtual_valid_queue)) {
-        // trace("TRACE: exiting fifo_policy::select_virtual_to_load -- empty\n");
+        // trace("TRACE: exiting rr_policy::select_virtual_to_load -- empty\n");
         return 1;
     }
-
-    struct optVirtualResourceList* virtualResource = list_first_entry(&virtual_valid_queue, struct optVirtualResourceList, iulist);
 
     struct optEludeList * physicalResource = get_physical_resource(&physical_free_list, event->physical_id);
 
     if (!physicalResource) {
-        trace("TRACE: exiting fifo_policy::select_virtual_to_load -- error\n");
-        return 0;
+        physicalResource = get_physical_resource(&physical_used_list, event->physical_id);
+
+        if (!physicalResource) {
+            trace("TRACE: exiting rr_policy::select_virtual_to_load -- error\n");
+            return 0;
+        }
     }
+
+    if (physicalResource->resource->virtualResource) {
+        event->virtual_id = physicalResource->resource->virtualResource->resource->virtualId;
+        rr_policy_save_context(event);
+    }
+
+    struct optVirtualResourceList* virtualResource = list_first_entry(&virtual_valid_queue, struct optVirtualResourceList, iulist);
 
     put_virtual_on_physical(virtualResource, physicalResource);
 
@@ -201,26 +210,26 @@ static inline int fifo_policy_select_virtual_to_load(struct sOSEvent* event) {
 
     clock_gettime(CLOCK_MONOTONIC_RAW, &end);
     add_event(event, SELECT_VIRTUAL_TO_LOAD, start, end);
-    trace("TRACE: exiting fifo_policy::select_virtual_to_load\n");
+    trace("TRACE: exiting rr_policy::select_virtual_to_load\n");
     return 0;
 }
 
-static inline int fifo_policy_save_context(struct sOSEvent* event) {
-    trace("TRACE: entering fifo_policy::save_context\n");
+static inline int rr_policy_save_context(struct sOSEvent* event) {
+    trace("TRACE: entering rr_policy::save_context\n");
 
     struct timespec start, end;
     clock_gettime(CLOCK_MONOTONIC_RAW, &start);
 
     struct optVirtualResourceList* virtualResource = get_virtual_resource(&virtual_on_ressource_queue, event->virtual_id);
     if (!virtualResource) {
-        trace("TRACE: exiting fifo_policy::save_context -- error virtual not found\n");
+        trace("TRACE: exiting rr_policy::save_context -- error virtual not found\n");
         return 1;
     }
 
     struct optEludeList * physicalResource = get_physical_resource(&physical_used_list, event->physical_id);
 
     if (!physicalResource) {
-        trace("TRACE: exiting fifo_policy::save_context -- error physical not found\n");
+        trace("TRACE: exiting rr_policy::save_context -- error physical not found\n");
         return 0;
     }
 
@@ -229,26 +238,26 @@ static inline int fifo_policy_save_context(struct sOSEvent* event) {
     clock_gettime(CLOCK_MONOTONIC_RAW, &end);
     add_event(event, SAVE_CONTEXT, start, end);
 
-    trace("TRACE: exiting fifo_policy::save_context\n");
+    trace("TRACE: exiting rr_policy::save_context\n");
     return 0;
 }
 
-static inline int fifo_policy_restore_context(struct sOSEvent* event) {
-    trace("TRACE: entering fifo_policy::restore_context\n");
+static inline int rr_policy_restore_context(struct sOSEvent* event) {
+    trace("TRACE: entering rr_policy::restore_context\n");
 
     struct timespec start, end;
     clock_gettime(CLOCK_MONOTONIC_RAW, &start);
 
     struct optVirtualResourceList* virtualResource = get_virtual_resource(&virtual_valid_queue, event->virtual_id);
     if (!virtualResource) {
-        trace("TRACE: exiting fifo_policy::restore_context -- error virtual not found\n");
+        trace("TRACE: exiting rr_policy::restore_context -- error virtual not found\n");
         return 1;
     }
 
     struct optEludeList * physicalResource = get_physical_resource(&physical_free_list, event->physical_id);
 
     if (!physicalResource) {
-        trace("TRACE: exiting fifo_policy::restore_context -- error physical not found\n");
+        trace("TRACE: exiting rr_policy::restore_context -- error physical not found\n");
         return 0;
     }
 
@@ -257,12 +266,12 @@ static inline int fifo_policy_restore_context(struct sOSEvent* event) {
     clock_gettime(CLOCK_MONOTONIC_RAW, &end);
     add_event(event, RESTORE_CONTEXT, start, end);
 
-    trace("TRACE: exiting fifo_policy::restore_context\n");
+    trace("TRACE: exiting rr_policy::restore_context\n");
     return 0;
 }
 
-static inline int fifo_policy_on_yield(struct sOSEvent *event) {
-    trace("TRACE: entering fifo_policy::on_yield\n");
+static inline int rr_policy_on_yield(struct sOSEvent *event) {
+    trace("TRACE: entering rr_policy::on_yield\n");
 
     struct timespec start, end;
     clock_gettime(CLOCK_MONOTONIC_RAW, &start);
@@ -270,7 +279,7 @@ static inline int fifo_policy_on_yield(struct sOSEvent *event) {
 
     struct optVirtualResourceList* virtualResource = get_virtual_resource(&virtual_on_ressource_queue, event->virtual_id);
     if (!virtualResource) {
-        trace("TRACE: exiting fifo_policy::on_yield -- error virtual not found\n");
+        trace("TRACE: exiting rr_policy::on_yield -- error virtual not found\n");
         return 1;
     }
 
@@ -286,12 +295,12 @@ static inline int fifo_policy_on_yield(struct sOSEvent *event) {
 
     clock_gettime(CLOCK_MONOTONIC_RAW, &end);
     add_event(event, ON_YIELD, start, end);
-    trace("TRACE: exiting fifo_policy::on_yield\n");
+    trace("TRACE: exiting rr_policy::on_yield\n");
     return 0;
 }
 
-static inline int fifo_policy_on_ready(struct sOSEvent* event) {
-    trace("TRACE: entering fifo_policy::on_ready\n");
+static inline int rr_policy_on_ready(struct sOSEvent* event) {
+    trace("TRACE: entering rr_policy::on_ready\n");
 
 
     struct timespec start, end;
@@ -300,7 +309,7 @@ static inline int fifo_policy_on_ready(struct sOSEvent* event) {
 
     struct optVirtualResourceList* virtualResource = get_virtual_resource(&virtual_invalid_queue, event->virtual_id);
     if (!virtualResource) {
-        trace("TRACE: exiting fifo_policy::on_ready -- error\n");
+        trace("TRACE: exiting rr_policy::on_ready -- error\n");
         return 1;
     }
 
@@ -312,12 +321,12 @@ static inline int fifo_policy_on_ready(struct sOSEvent* event) {
     clock_gettime(CLOCK_MONOTONIC_RAW, &end);
     add_event(event, ON_READY, start, end);
 
-    trace("TRACE: exiting fifo_policy::on_ready\n");
+    trace("TRACE: exiting rr_policy::on_ready\n");
     return 0;
 }
 
-static inline int fifo_policy_on_invalid(struct sOSEvent* event) {
-    trace("TRACE: entering fifo_policy::on_invalid\n");
+static inline int rr_policy_on_invalid(struct sOSEvent* event) {
+    trace("TRACE: entering rr_policy::on_invalid\n");
 
 
     struct timespec start, end;
@@ -330,7 +339,7 @@ static inline int fifo_policy_on_invalid(struct sOSEvent* event) {
         on_resource = false;
         virtualResource = get_virtual_resource(&virtual_valid_queue, event->virtual_id);
         if(!virtualResource) {
-            trace("TRACE: exiting fifo_policy::on_ready -- error\n");
+            trace("TRACE: exiting rr_policy::on_ready -- error\n");
             return 1;
         }
     }
@@ -346,35 +355,35 @@ static inline int fifo_policy_on_invalid(struct sOSEvent* event) {
 
     clock_gettime(CLOCK_MONOTONIC_RAW, &end);
     add_event(event, ON_INVALID, start, end);
-    trace("TRACE: exiting fifo_policy::on_invalid\n");
+    trace("TRACE: exiting rr_policy::on_invalid\n");
     return 0;
 }
 
-static inline int fifo_policy_on_hints(struct sOSEvent* event) {
-    trace("TRACE: entering fifo_policy::on_hints\n");
+static inline int rr_policy_on_hints(struct sOSEvent* event) {
+    trace("TRACE: entering rr_policy::on_hints\n");
 
     struct timespec start, end;
     clock_gettime(CLOCK_MONOTONIC_RAW, &start);
 
     clock_gettime(CLOCK_MONOTONIC_RAW, &end);
     add_event(event, ON_HINTS, start, end);
-    trace("TRACE: exiting fifo_policy::on_hints\n");
+    trace("TRACE: exiting rr_policy::on_hints\n");
     return 0;
 }
 
-static inline int fifo_policy_on_protection_violation(struct sOSEvent* event) {
-    trace("TRACE: entering fifo_policy::on_protection_violation\n");
+static inline int rr_policy_on_protection_violation(struct sOSEvent* event) {
+    trace("TRACE: entering rr_policy::on_protection_violation\n");
     struct timespec start, end;
     clock_gettime(CLOCK_MONOTONIC_RAW, &start);
 
     clock_gettime(CLOCK_MONOTONIC_RAW, &end);
     add_event(event, ON_PROTECTION_VIOLATION, start, end);
-    trace("TRACE: exiting fifo_policy::on_protection_violation\n");
+    trace("TRACE: exiting rr_policy::on_protection_violation\n");
     return 0;
 }
 
-static inline int fifo_policy_on_create_thread(struct sOSEvent* event) {
-    trace("TRACE: entering fifo_policy::on_create_thread\n");
+static inline int rr_policy_on_create_thread(struct sOSEvent* event) {
+    trace("TRACE: entering rr_policy::on_create_thread\n");
 
     struct timespec start, end;
     clock_gettime(CLOCK_MONOTONIC_RAW, &start);
@@ -397,12 +406,12 @@ static inline int fifo_policy_on_create_thread(struct sOSEvent* event) {
 
     clock_gettime(CLOCK_MONOTONIC_RAW, &end);
     add_event(event, ON_CREATE_THREAD, start, end);
-    trace("TRACE: exiting fifo_policy::on_create_thread\n");
+    trace("TRACE: exiting rr_policy::on_create_thread\n");
     return 0;
 }
 
-static inline int fifo_policy_on_dead_thread(struct sOSEvent* event) {
-    trace("TRACE: entering fifo_policy::on_dead_thread\n");
+static inline int rr_policy_on_dead_thread(struct sOSEvent* event) {
+    trace("TRACE: entering rr_policy::on_dead_thread\n");
 
 
     struct timespec start, end;
@@ -414,7 +423,7 @@ static inline int fifo_policy_on_dead_thread(struct sOSEvent* event) {
         if (!virtualResource) {
             virtualResource = get_virtual_resource(&virtual_invalid_queue, event->virtual_id);
             if (!virtualResource) {
-                trace("TRACE: exiting fifo_policy::on_dead_thread -- error\n");
+                trace("TRACE: exiting rr_policy::on_dead_thread -- error\n");
                 return 1;
             } else {
                 pthread_mutex_lock(&virtualInvalidQueueLock);
@@ -449,34 +458,70 @@ static inline int fifo_policy_on_dead_thread(struct sOSEvent* event) {
 
     clock_gettime(CLOCK_MONOTONIC_RAW, &end);
     add_event(event, ON_DEAD_THREAD, start, end);
-    trace("TRACE: exiting fifo_policy::on_dead_thread\n");
+    trace("TRACE: exiting rr_policy::on_dead_thread\n");
     return 0;
 }
 
-static inline int fifo_policy_on_sleep_state_change(struct sOSEvent* event) {
-    trace("TRACE: entering fifo_policy::on_sleep_state_change\n");
+static inline int rr_policy_on_sleep_state_change(struct sOSEvent* event) {
+    trace("TRACE: entering rr_policy::on_sleep_state_change\n");
     struct timespec start, end;
     clock_gettime(CLOCK_MONOTONIC_RAW, &start);
 
+    if (event->sleep == BUSY) {
+        struct optEludeList * physicalResource = get_physical_resource(&physical_free_list, event->physical_id);
+        bool move = true;
+        if (!physicalResource) {
+            move = false;
+            physicalResource = get_physical_resource(&physical_used_list, event->physical_id);
+            if (!physicalResource) {
+                trace("TRACE: exiting rr_policy::on_sleep_state_change -- error\n");
+                return 1;
+            }
+        }
+
+        if (physicalResource->resource->virtualResource) {
+            event->virtual_id = physicalResource->resource->virtualResource->resource->virtualId;
+            rr_policy_save_context(event);
+        }
+
+        if (move)
+            move_list_safe(&physicalResource->iulist, &physical_used_list, &physicalFreeListLock, &physicalUsedListLock);
+
+        struct optEludeList* phys;
+        printf("The free list is composed of : ");
+        list_for_each_entry(phys, &physical_free_list, iulist) {
+            printf("%lu ", phys->resource->physicalId);
+        }
+        printf("\n");
+    } else if (event->sleep == AVAILABLE) {
+        struct optEludeList * physicalResource = get_physical_resource(&physical_used_list, event->physical_id);
+        if (!physicalResource) {
+            trace("TRACE: exiting rr_policy::on_sleep_state_change -- error\n");
+            return 1;
+        }
+
+        move_list_safe(&physicalResource->iulist, &physical_free_list, &physicalUsedListLock, &physicalFreeListLock);
+    }
+
     clock_gettime(CLOCK_MONOTONIC_RAW, &end);
     add_event(event, ON_SLEEP_STATE_CHANGE, start, end);
-    trace("TRACE: exiting fifo_policy::on_sleep_state_change\n");
+    trace("TRACE: exiting rr_policy::on_sleep_state_change\n");
     return 0;
 }
 
-static inline int fifo_policy_on_signal(struct sOSEvent* event) {
-    trace("TRACE: entering fifo_policy::on_signal\n");
+static inline int rr_policy_on_signal(struct sOSEvent* event) {
+    trace("TRACE: entering rr_policy::on_signal\n");
     struct timespec start, end;
     clock_gettime(CLOCK_MONOTONIC_RAW, &start);
 
     clock_gettime(CLOCK_MONOTONIC_RAW, &end);
     add_event(event, ON_SIGNAL, start, end);
-    trace("TRACE: exiting fifo_policy::on_signal\n");
+    trace("TRACE: exiting rr_policy::on_signal\n");
     return 0;
 }
 
-static inline int fifo_policy_init(unsigned long numberOfResource) {
-    trace("TRACE: entering fifo_policy::init\n");
+static inline int rr_policy_init(unsigned long numberOfResource) {
+    trace("TRACE: entering rr_policy::init\n");
 
     init_statistics();
     struct timespec start, end;
@@ -501,13 +546,13 @@ static inline int fifo_policy_init(unsigned long numberOfResource) {
 
     clock_gettime(CLOCK_MONOTONIC_RAW, &end);
     add_event(NULL, INIT, start, end);
-    trace("TRACE: exiting fifo_policy::init\n");
+    trace("TRACE: exiting rr_policy::init\n");
     return 0;
 }
 
 
-void fifo_policy_exit() {
-    trace("TRACE: entering fifo_policy::exit\n");
+void rr_policy_exit() {
+    trace("TRACE: entering rr_policy::exit\n");
 
     struct timespec start, end;
     clock_gettime(CLOCK_MONOTONIC_RAW, &start);
@@ -560,5 +605,5 @@ void fifo_policy_exit() {
     clock_gettime(CLOCK_MONOTONIC_RAW, &end);
     add_event(NULL, EXIT, start, end);
 
-    trace("TRACE: exiting fifo_policy::exit\n");
+    trace("TRACE: exiting rr_policy::exit\n");
 }
