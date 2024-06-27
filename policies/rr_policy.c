@@ -4,20 +4,22 @@
 
 #include "rr_policy.h"
 
-LIST_HEAD(virtual_on_ressource_queue);
-LIST_HEAD(virtual_valid_queue);
-LIST_HEAD(virtual_invalid_queue);
+LIST_HEAD(_rr_virtual_on_ressource_queue);
+LIST_HEAD(_rr_virtual_valid_queue);
+LIST_HEAD(_rr_virtual_invalid_queue);
 
-LIST_HEAD(physical_free_list);
-LIST_HEAD(physical_used_list);
+LIST_HEAD(_rr_physical_free_list);
+LIST_HEAD(_rr_physical_used_list);
 
-pthread_mutex_t resourceListLock;
-pthread_mutex_t virtualOnResourceQueueLock;
-pthread_mutex_t virtualValidQueueLock;
-pthread_mutex_t virtualInvalidQueueLock;
-pthread_mutex_t physicalUsedListLock;
-pthread_mutex_t physicalFreeListLock;
-int nb_resources;
+pthread_mutex_t _rr_resourceListLock;
+pthread_mutex_t _rr_virtualOnResourceQueueLock;
+pthread_mutex_t _rr_virtualValidQueueLock;
+pthread_mutex_t _rr_virtualInvalidQueueLock;
+pthread_mutex_t _rr_physicalUsedListLock;
+pthread_mutex_t _rr_physicalFreeListLock;
+int _rr_nb_resources;
+
+int preemption_time = 2000;
 
 
 
@@ -66,7 +68,7 @@ struct policy_detail rr_policy_detail = {
         .is_default = true
 };
 
-struct optVirtualResourceList* get_virtual_resource(struct list_head* list, unsigned long virtualId) {
+struct optVirtualResourceList* _rr_get_virtual_resource(struct list_head* list, unsigned long virtualId) {
     struct optVirtualResourceList *virtualResource;
     list_for_each_entry(virtualResource, list, iulist) {
         if (virtualResource->resource->virtualId == virtualId) {
@@ -79,7 +81,7 @@ struct optVirtualResourceList* get_virtual_resource(struct list_head* list, unsi
         return virtualResource;
 }
 
-struct optEludeList* get_physical_resource(struct list_head* list, unsigned long physicalId) {
+struct optEludeList* _rr_get_physical_resource(struct list_head* list, unsigned long physicalId) {
     struct optEludeList *physicalResource;
     list_for_each_entry(physicalResource, list, iulist) {
         if (physicalResource->resource->physicalId == physicalId) {
@@ -92,7 +94,7 @@ struct optEludeList* get_physical_resource(struct list_head* list, unsigned long
         return physicalResource;
 }
 
-void move_list_safe(struct list_head * item, struct list_head * dest, pthread_mutex_t* lock1, pthread_mutex_t* lock2) {
+void _rr_move_list_safe(struct list_head * item, struct list_head * dest, pthread_mutex_t* lock1, pthread_mutex_t* lock2) {
     LIST_HEAD(tmp);
 
     pthread_mutex_lock(lock1);
@@ -104,24 +106,39 @@ void move_list_safe(struct list_head * item, struct list_head * dest, pthread_mu
     pthread_mutex_unlock(lock2);
 }
 
-void put_virtual_on_physical(struct optVirtualResourceList* virtual, struct optEludeList* physical) {
-    move_list_safe(&virtual->iulist, &virtual_on_ressource_queue, &virtualValidQueueLock, &virtualOnResourceQueueLock);
-    move_list_safe(&physical->iulist, &physical_used_list, &physicalFreeListLock, &physicalUsedListLock);
+void _rr_put_virtual_on_physical(struct optVirtualResourceList* virtual, struct optEludeList* physical) {
+    _rr_move_list_safe(&virtual->iulist, &_rr_virtual_on_ressource_queue, &_rr_virtualValidQueueLock, &_rr_virtualOnResourceQueueLock);
+    _rr_move_list_safe(&physical->iulist, &_rr_physical_used_list, &_rr_physicalFreeListLock, &_rr_physicalUsedListLock);
 
     pthread_mutex_lock(&physical->resource->lock);
     physical->resource->virtualResource = virtual;
     pthread_mutex_unlock(&physical->resource->lock);
     virtual->resource->physical_resource = physical;
+    clock_gettime(CLOCK_MONOTONIC_RAW, &virtual->resource->last_start);
 }
 
-void put_virtual_off_physical(struct optVirtualResourceList* virtual, struct optEludeList* physical) {
-    move_list_safe(&virtual->iulist, &virtual_valid_queue, &virtualOnResourceQueueLock, &virtualValidQueueLock);
-    move_list_safe(&physical->iulist, &physical_free_list, &physicalUsedListLock, &physicalFreeListLock);
+void _rr_put_virtual_off_physical(struct optVirtualResourceList* virtual, struct optEludeList* physical) {
+    _rr_move_list_safe(&virtual->iulist, &_rr_virtual_valid_queue, &_rr_virtualOnResourceQueueLock, &_rr_virtualValidQueueLock);
+    _rr_move_list_safe(&physical->iulist, &_rr_physical_free_list, &_rr_physicalUsedListLock, &_rr_physicalFreeListLock);
 
     pthread_mutex_lock(&physical->resource->lock);
     physical->resource->virtualResource = NULL;
     pthread_mutex_unlock(&physical->resource->lock);
     virtual->resource->physical_resource = NULL;
+}
+
+void display_physical_list(struct list_head* list) {
+    struct optEludeList* phys;
+    list_for_each_entry(phys, list, iulist) {
+        printf("%lu ", phys->resource->physicalId);
+    }
+}
+
+void display_virtual_list(struct list_head* list) {
+    struct optVirtualResourceList* node;
+    list_for_each_entry(node, list, iulist) {
+        printf("%lu ", node->resource->virtualId);
+    }
 }
 
 
@@ -132,21 +149,26 @@ static inline int rr_policy_select_phys_to_virtual(struct sOSEvent *event) {
     clock_gettime(CLOCK_MONOTONIC_RAW, &start);
 
 
-    struct optVirtualResourceList* virtualResource = get_virtual_resource(&virtual_valid_queue, event->virtual_id);
+    struct optVirtualResourceList* virtualResource = _rr_get_virtual_resource(&_rr_virtual_valid_queue, event->virtual_id);
     if (!virtualResource) {
-        trace("TRACE: exiting rr_policy::select_phys_to_virt -- error virtual not found\n");
+        printf("error virtual %lu not found\n", event->virtual_id);
+trace("TRACE: exiting rr_policy::select_phys_to_virt\n");
         return 1;
     }
 
-    if (list_empty(&physical_free_list)) {
+    if (list_empty(&_rr_physical_free_list)) {
         trace("TRACE: exiting rr_policy::select_phys_to_virt -- error no free physical\n");
         return 1;
     }
 
+    printf("The free list is : ");
+    display_physical_list(&_rr_physical_free_list);
+    printf("\n");
 
-    struct optEludeList * phys = list_first_entry(&physical_free_list, struct optEludeList, iulist);
 
-    put_virtual_on_physical(virtualResource, phys);
+    struct optEludeList * phys = list_first_entry(&_rr_physical_free_list, struct optEludeList, iulist);
+
+    _rr_put_virtual_on_physical(virtualResource, phys);
 
     event->physical_id = phys->resource->physicalId;
     unsigned long tmp = virtualResource->resource->last_event_id;
@@ -178,30 +200,50 @@ static inline int rr_policy_select_virtual_to_load(struct sOSEvent* event) {
     struct timespec start, end;
     clock_gettime(CLOCK_MONOTONIC_RAW, &start);
 
-    if (list_empty(&virtual_valid_queue)) {
+    if (list_empty(&_rr_virtual_valid_queue)) {
         // trace("TRACE: exiting rr_policy::select_virtual_to_load -- empty\n");
         return 1;
     }
 
-    struct optEludeList * physicalResource = get_physical_resource(&physical_free_list, event->physical_id);
+    struct optEludeList * physicalResource = _rr_get_physical_resource(&_rr_physical_free_list, event->physical_id);
 
     if (!physicalResource) {
-        physicalResource = get_physical_resource(&physical_used_list, event->physical_id);
+        physicalResource = _rr_get_physical_resource(&_rr_physical_used_list, event->physical_id);
 
         if (!physicalResource) {
-            trace("TRACE: exiting rr_policy::select_virtual_to_load -- error\n");
+            printf("error physical %lu not found\n", event->physical_id);
+trace("TRACE: exiting rr_policy::select_virtual_to_load\n");
             return 0;
         }
     }
 
-    if (physicalResource->resource->virtualResource) {
-        event->virtual_id = physicalResource->resource->virtualResource->resource->virtualId;
-        rr_policy_save_context(event);
+    if (physicalResource->resource->virtualResource && !(start.tv_sec - physicalResource->resource->virtualResource->resource->last_start.tv_sec) * 1000000 + start.tv_nsec - physicalResource->resource->virtualResource->resource->last_start.tv_nsec > preemption_time) {
+        return 1;
     }
 
-    struct optVirtualResourceList* virtualResource = list_first_entry(&virtual_valid_queue, struct optVirtualResourceList, iulist);
+    printf("The valid queue is : ");
+    display_virtual_list(&_rr_virtual_valid_queue);
+    printf("\n");
 
-    put_virtual_on_physical(virtualResource, physicalResource);
+    printf("The on_resource queue is : ");
+    display_virtual_list(&_rr_virtual_on_ressource_queue);
+    printf("\n");
+
+    printf("The invalid queue is : ");
+    display_virtual_list(&_rr_virtual_invalid_queue);
+    printf("\n");
+
+    printf("The free list is : ");
+    display_physical_list(&_rr_physical_free_list);
+    printf("\n");
+
+    printf("The used list is : ");
+    display_physical_list(&_rr_physical_used_list);
+    printf("\n");
+
+    struct optVirtualResourceList* virtualResource = list_first_entry(&_rr_virtual_valid_queue, struct optVirtualResourceList, iulist);
+
+    _rr_put_virtual_on_physical(virtualResource, physicalResource);
 
     event->virtual_id = virtualResource->resource->virtualId;
     event->event_id = virtualResource->resource->last_event_id;
@@ -216,24 +258,27 @@ static inline int rr_policy_select_virtual_to_load(struct sOSEvent* event) {
 
 static inline int rr_policy_save_context(struct sOSEvent* event) {
     trace("TRACE: entering rr_policy::save_context\n");
+    printf("virtual %lu physical %lu\n", event->virtual_id, event->physical_id);
 
     struct timespec start, end;
     clock_gettime(CLOCK_MONOTONIC_RAW, &start);
 
-    struct optVirtualResourceList* virtualResource = get_virtual_resource(&virtual_on_ressource_queue, event->virtual_id);
+    struct optVirtualResourceList* virtualResource = _rr_get_virtual_resource(&_rr_virtual_on_ressource_queue, event->virtual_id);
     if (!virtualResource) {
-        trace("TRACE: exiting rr_policy::save_context -- error virtual not found\n");
+        printf("error virtual %lu not found\n", event->virtual_id);
+trace("TRACE: exiting rr_policy::save_context\n");
         return 1;
     }
 
-    struct optEludeList * physicalResource = get_physical_resource(&physical_used_list, event->physical_id);
+    struct optEludeList * physicalResource = _rr_get_physical_resource(&_rr_physical_used_list, event->physical_id);
 
     if (!physicalResource) {
-        trace("TRACE: exiting rr_policy::save_context -- error physical not found\n");
+        printf("error physical %lu not found\n", event->physical_id);
+trace("TRACE: exiting rr_policy::save_context\n");
         return 0;
     }
 
-    put_virtual_off_physical(virtualResource, physicalResource);
+    _rr_put_virtual_off_physical(virtualResource, physicalResource);
 
     clock_gettime(CLOCK_MONOTONIC_RAW, &end);
     add_event(event, SAVE_CONTEXT, start, end);
@@ -244,24 +289,27 @@ static inline int rr_policy_save_context(struct sOSEvent* event) {
 
 static inline int rr_policy_restore_context(struct sOSEvent* event) {
     trace("TRACE: entering rr_policy::restore_context\n");
+    printf("virtual %lu physical %lu\n", event->virtual_id, event->physical_id);
 
     struct timespec start, end;
     clock_gettime(CLOCK_MONOTONIC_RAW, &start);
 
-    struct optVirtualResourceList* virtualResource = get_virtual_resource(&virtual_valid_queue, event->virtual_id);
+    struct optVirtualResourceList* virtualResource = _rr_get_virtual_resource(&_rr_virtual_valid_queue, event->virtual_id);
     if (!virtualResource) {
-        trace("TRACE: exiting rr_policy::restore_context -- error virtual not found\n");
+        printf("error virtual %lu not found\n", event->virtual_id);
+trace("TRACE: exiting rr_policy::restore_context\n");
         return 1;
     }
 
-    struct optEludeList * physicalResource = get_physical_resource(&physical_free_list, event->physical_id);
+    struct optEludeList * physicalResource = _rr_get_physical_resource(&_rr_physical_free_list, event->physical_id);
 
     if (!physicalResource) {
-        trace("TRACE: exiting rr_policy::restore_context -- error physical not found\n");
+        printf("error physical %lu not found\n", event->physical_id);
+trace("TRACE: exiting rr_policy::restore_context\n");
         return 0;
     }
 
-    put_virtual_on_physical(virtualResource, physicalResource);
+    _rr_put_virtual_on_physical(virtualResource, physicalResource);
 
     clock_gettime(CLOCK_MONOTONIC_RAW, &end);
     add_event(event, RESTORE_CONTEXT, start, end);
@@ -272,22 +320,29 @@ static inline int rr_policy_restore_context(struct sOSEvent* event) {
 
 static inline int rr_policy_on_yield(struct sOSEvent *event) {
     trace("TRACE: entering rr_policy::on_yield\n");
+printf("virtual %lu\n", event->virtual_id);
 
     struct timespec start, end;
     clock_gettime(CLOCK_MONOTONIC_RAW, &start);
 
 
-    struct optVirtualResourceList* virtualResource = get_virtual_resource(&virtual_on_ressource_queue, event->virtual_id);
+    struct optVirtualResourceList* virtualResource = _rr_get_virtual_resource(&_rr_virtual_on_ressource_queue, event->virtual_id);
+    bool preempted = false;
     if (!virtualResource) {
-        trace("TRACE: exiting rr_policy::on_yield -- error virtual not found\n");
-        return 1;
+        preempted = true;
+        virtualResource = _rr_get_virtual_resource(&_rr_virtual_valid_queue, event->virtual_id);
+        if (!virtualResource) {
+            printf("error virtual %lu not found\n", event->virtual_id);
+            trace("TRACE: exiting rr_policy::on_yield\n");
+            return 1;
+        }
     }
 
     if (virtualResource->resource->physical_resource) {
         struct optEludeList* physicalResource = virtualResource->resource->physical_resource;
-        put_virtual_off_physical(virtualResource, physicalResource);
-    } else {
-        move_list_safe(&(virtualResource->iulist), &virtual_valid_queue, &virtualOnResourceQueueLock, &virtualValidQueueLock);
+        _rr_put_virtual_off_physical(virtualResource, physicalResource);
+    } else if (!preempted) {
+        _rr_move_list_safe(&(virtualResource->iulist), &_rr_virtual_valid_queue, &_rr_virtualOnResourceQueueLock, &_rr_virtualValidQueueLock);
     }
 
     virtualResource->resource->last_event_id = event->event_id;
@@ -301,22 +356,24 @@ static inline int rr_policy_on_yield(struct sOSEvent *event) {
 
 static inline int rr_policy_on_ready(struct sOSEvent* event) {
     trace("TRACE: entering rr_policy::on_ready\n");
+printf("virtual %lu\n", event->virtual_id);
 
 
     struct timespec start, end;
     clock_gettime(CLOCK_MONOTONIC_RAW, &start);
 
 
-    struct optVirtualResourceList* virtualResource = get_virtual_resource(&virtual_invalid_queue, event->virtual_id);
+    struct optVirtualResourceList* virtualResource = _rr_get_virtual_resource(&_rr_virtual_invalid_queue, event->virtual_id);
     if (!virtualResource) {
-        trace("TRACE: exiting rr_policy::on_ready -- error\n");
+        printf("error virtual %lu not found\n", event->virtual_id);
+trace("TRACE: exiting rr_policy::on_ready\n");
         return 1;
     }
 
     virtualResource->resource->last_event_id = event->event_id;
     virtualResource->resource->physical_resource = NULL;
 
-    move_list_safe(&(virtualResource->iulist), &virtual_valid_queue, &virtualInvalidQueueLock, &virtualValidQueueLock);
+    _rr_move_list_safe(&(virtualResource->iulist), &_rr_virtual_valid_queue, &_rr_virtualInvalidQueueLock, &_rr_virtualValidQueueLock);
 
     clock_gettime(CLOCK_MONOTONIC_RAW, &end);
     add_event(event, ON_READY, start, end);
@@ -327,31 +384,30 @@ static inline int rr_policy_on_ready(struct sOSEvent* event) {
 
 static inline int rr_policy_on_invalid(struct sOSEvent* event) {
     trace("TRACE: entering rr_policy::on_invalid\n");
+printf("virtual %lu\n", event->virtual_id);
 
 
     struct timespec start, end;
     clock_gettime(CLOCK_MONOTONIC_RAW, &start);
 
-
-    bool on_resource = true;
-    struct optVirtualResourceList* virtualResource = get_virtual_resource(&virtual_on_ressource_queue, event->virtual_id);
+    struct optVirtualResourceList* virtualResource = _rr_get_virtual_resource(&_rr_virtual_on_ressource_queue, event->virtual_id);
     if (!virtualResource) {
-        on_resource = false;
-        virtualResource = get_virtual_resource(&virtual_valid_queue, event->virtual_id);
+        virtualResource = _rr_get_virtual_resource(&_rr_virtual_valid_queue, event->virtual_id);
         if(!virtualResource) {
-            trace("TRACE: exiting rr_policy::on_ready -- error\n");
+            printf("error virtual %lu not found\n", event->virtual_id);
+trace("TRACE: exiting rr_policy::on_invalid\n");
             return 1;
         }
     }
 
     if (virtualResource->resource->physical_resource) {
         struct optEludeList* physicalResource = virtualResource->resource->physical_resource;
-        put_virtual_off_physical(virtualResource, physicalResource);
+        _rr_put_virtual_off_physical(virtualResource, physicalResource);
     }
 
     virtualResource->resource->last_event_id = event->event_id;
 
-    move_list_safe(&(virtualResource->iulist), &virtual_invalid_queue, &virtualValidQueueLock, &virtualInvalidQueueLock);
+    _rr_move_list_safe(&(virtualResource->iulist), &_rr_virtual_invalid_queue, &_rr_virtualValidQueueLock, &_rr_virtualInvalidQueueLock);
 
     clock_gettime(CLOCK_MONOTONIC_RAW, &end);
     add_event(event, ON_INVALID, start, end);
@@ -399,10 +455,11 @@ static inline int rr_policy_on_create_thread(struct sOSEvent* event) {
     virtualResource->resource->last_event_id = event->event_id;
     virtualResource->resource->process = event->attached_process;
     virtualResource->resource->utilisation = 0;
+    clock_gettime(CLOCK_MONOTONIC_RAW, &virtualResource->resource->last_start);
 
-    pthread_mutex_lock(&virtualInvalidQueueLock);
-    list_add_tail(&(virtualResource->iulist), &virtual_invalid_queue);
-    pthread_mutex_unlock(&virtualInvalidQueueLock);
+    pthread_mutex_lock(&_rr_virtualInvalidQueueLock);
+    list_add_tail(&(virtualResource->iulist), &_rr_virtual_invalid_queue);
+    pthread_mutex_unlock(&_rr_virtualInvalidQueueLock);
 
     clock_gettime(CLOCK_MONOTONIC_RAW, &end);
     add_event(event, ON_CREATE_THREAD, start, end);
@@ -417,28 +474,29 @@ static inline int rr_policy_on_dead_thread(struct sOSEvent* event) {
     struct timespec start, end;
     clock_gettime(CLOCK_MONOTONIC_RAW, &start);
 
-    struct optVirtualResourceList* virtualResource = get_virtual_resource(&virtual_on_ressource_queue, event->virtual_id);
+    struct optVirtualResourceList* virtualResource = _rr_get_virtual_resource(&_rr_virtual_on_ressource_queue, event->virtual_id);
     if (!virtualResource) {
-        virtualResource = get_virtual_resource(&virtual_valid_queue, event->virtual_id);
+        virtualResource = _rr_get_virtual_resource(&_rr_virtual_valid_queue, event->virtual_id);
         if (!virtualResource) {
-            virtualResource = get_virtual_resource(&virtual_invalid_queue, event->virtual_id);
+            virtualResource = _rr_get_virtual_resource(&_rr_virtual_invalid_queue, event->virtual_id);
             if (!virtualResource) {
-                trace("TRACE: exiting rr_policy::on_dead_thread -- error\n");
+                printf("error virtual %lu not found\n", event->virtual_id);
+trace("TRACE: exiting rr_policy::on_dead_thread\n");
                 return 1;
             } else {
-                pthread_mutex_lock(&virtualInvalidQueueLock);
+                pthread_mutex_lock(&_rr_virtualInvalidQueueLock);
                 list_del(&(virtualResource->iulist));
-                pthread_mutex_unlock(&virtualInvalidQueueLock);
+                pthread_mutex_unlock(&_rr_virtualInvalidQueueLock);
             }
         } else {
-            pthread_mutex_lock(&virtualValidQueueLock);
+            pthread_mutex_lock(&_rr_virtualValidQueueLock);
             list_del(&(virtualResource->iulist));
-            pthread_mutex_unlock(&virtualValidQueueLock);
+            pthread_mutex_unlock(&_rr_virtualValidQueueLock);
         }
     } else {
-        pthread_mutex_lock(&virtualOnResourceQueueLock);
+        pthread_mutex_lock(&_rr_virtualOnResourceQueueLock);
         list_del(&(virtualResource->iulist));
-        pthread_mutex_unlock(&virtualOnResourceQueueLock);
+        pthread_mutex_unlock(&_rr_virtualOnResourceQueueLock);
     }
 
     if (virtualResource->resource->physical_resource) {
@@ -447,7 +505,7 @@ static inline int rr_policy_on_dead_thread(struct sOSEvent* event) {
         physicalResource->resource->virtualResource = NULL;
         pthread_mutex_unlock(&physicalResource->resource->lock);
 
-        move_list_safe(&physicalResource->iulist, &physical_free_list, &physicalUsedListLock, &physicalFreeListLock);
+        _rr_move_list_safe(&physicalResource->iulist, &_rr_physical_free_list, &_rr_physicalUsedListLock, &_rr_physicalFreeListLock);
     }
 
     virtualResource->resource->last_event_id = event->event_id;
@@ -464,17 +522,19 @@ static inline int rr_policy_on_dead_thread(struct sOSEvent* event) {
 
 static inline int rr_policy_on_sleep_state_change(struct sOSEvent* event) {
     trace("TRACE: entering rr_policy::on_sleep_state_change\n");
+printf("physical %lu\n", event->physical_id);
     struct timespec start, end;
     clock_gettime(CLOCK_MONOTONIC_RAW, &start);
 
     if (event->sleep == BUSY) {
-        struct optEludeList * physicalResource = get_physical_resource(&physical_free_list, event->physical_id);
+        struct optEludeList * physicalResource = _rr_get_physical_resource(&_rr_physical_free_list, event->physical_id);
         bool move = true;
         if (!physicalResource) {
             move = false;
-            physicalResource = get_physical_resource(&physical_used_list, event->physical_id);
+            physicalResource = _rr_get_physical_resource(&_rr_physical_used_list, event->physical_id);
             if (!physicalResource) {
-                trace("TRACE: exiting rr_policy::on_sleep_state_change -- error\n");
+                printf("error physical %lu not found\n", event->physical_id);
+trace("TRACE: exiting rr_policy::on_sleep_state_change\n");
                 return 1;
             }
         }
@@ -482,25 +542,22 @@ static inline int rr_policy_on_sleep_state_change(struct sOSEvent* event) {
         if (physicalResource->resource->virtualResource) {
             event->virtual_id = physicalResource->resource->virtualResource->resource->virtualId;
             rr_policy_save_context(event);
+            move = true;
         }
 
         if (move)
-            move_list_safe(&physicalResource->iulist, &physical_used_list, &physicalFreeListLock, &physicalUsedListLock);
+            _rr_move_list_safe(&physicalResource->iulist, &_rr_physical_used_list, &_rr_physicalFreeListLock, &_rr_physicalUsedListLock);
 
-        struct optEludeList* phys;
-        printf("The free list is composed of : ");
-        list_for_each_entry(phys, &physical_free_list, iulist) {
-            printf("%lu ", phys->resource->physicalId);
-        }
-        printf("\n");
+
     } else if (event->sleep == AVAILABLE) {
-        struct optEludeList * physicalResource = get_physical_resource(&physical_used_list, event->physical_id);
+        struct optEludeList * physicalResource = _rr_get_physical_resource(&_rr_physical_used_list, event->physical_id);
         if (!physicalResource) {
-            trace("TRACE: exiting rr_policy::on_sleep_state_change -- error\n");
+            printf("Error physical %lu not found\n", event->physical_id);
+            trace("TRACE: exiting rr_policy::on_sleep_state_change\n");
             return 1;
         }
 
-        move_list_safe(&physicalResource->iulist, &physical_free_list, &physicalUsedListLock, &physicalFreeListLock);
+        _rr_move_list_safe(&physicalResource->iulist, &_rr_physical_free_list, &_rr_physicalUsedListLock, &_rr_physicalFreeListLock);
     }
 
     clock_gettime(CLOCK_MONOTONIC_RAW, &end);
@@ -527,21 +584,21 @@ static inline int rr_policy_init(unsigned long numberOfResource) {
     struct timespec start, end;
     clock_gettime(CLOCK_MONOTONIC_RAW, &start);
 
-    nb_resources = numberOfResource;
-    pthread_mutex_init(&resourceListLock, NULL);
-    pthread_mutex_init(&virtualValidQueueLock, NULL);
-    pthread_mutex_init(&virtualInvalidQueueLock, NULL);
-    pthread_mutex_init(&physicalFreeListLock, NULL);
-    pthread_mutex_init(&physicalUsedListLock, NULL);
+    _rr_nb_resources = numberOfResource;
+    pthread_mutex_init(&_rr_resourceListLock, NULL);
+    pthread_mutex_init(&_rr_virtualValidQueueLock, NULL);
+    pthread_mutex_init(&_rr_virtualInvalidQueueLock, NULL);
+    pthread_mutex_init(&_rr_physicalFreeListLock, NULL);
+    pthread_mutex_init(&_rr_physicalUsedListLock, NULL);
 
-    for (unsigned long physical_id = 0; physical_id < nb_resources; physical_id++) {
+    for (unsigned long physical_id = 0; physical_id < _rr_nb_resources; physical_id++) {
         struct optEludeList * resource = (struct optEludeList*)malloc(sizeof(struct optEludeList));
 
         INIT_LIST_HEAD(&(resource->iulist));
 
         resource->resource = &(resourceList[physical_id]);
 
-        list_add_tail(&(resource->iulist), &physical_free_list);
+        list_add_tail(&(resource->iulist), &_rr_physical_free_list);
     }
 
     clock_gettime(CLOCK_MONOTONIC_RAW, &end);
@@ -559,7 +616,7 @@ void rr_policy_exit() {
 
     struct list_head *listIter, *listIter_s;
 
-    list_for_each_safe(listIter, listIter_s, &virtual_on_ressource_queue) {
+    list_for_each_safe(listIter, listIter_s, &_rr_virtual_on_ressource_queue) {
         struct optVirtualResourceList* node = list_entry(listIter, struct optVirtualResourceList, iulist);
 
         list_del(listIter);
@@ -568,7 +625,7 @@ void rr_policy_exit() {
         free(node);
     }
 
-    list_for_each_safe(listIter, listIter_s, &virtual_valid_queue) {
+    list_for_each_safe(listIter, listIter_s, &_rr_virtual_valid_queue) {
         struct optVirtualResourceList* node = list_entry(listIter, struct optVirtualResourceList, iulist);
 
         list_del(listIter);
@@ -577,7 +634,7 @@ void rr_policy_exit() {
         free(node);
     }
 
-    list_for_each_safe(listIter, listIter_s, &virtual_invalid_queue) {
+    list_for_each_safe(listIter, listIter_s, &_rr_virtual_invalid_queue) {
         struct optVirtualResourceList* node = list_entry(listIter, struct optVirtualResourceList, iulist);
 
         list_del(listIter);
@@ -586,7 +643,7 @@ void rr_policy_exit() {
         free(node);
     }
 
-    list_for_each_safe(listIter, listIter_s, &physical_free_list) {
+    list_for_each_safe(listIter, listIter_s, &_rr_physical_free_list) {
         struct optEludeList* node = list_entry(listIter, struct optEludeList, iulist);
 
         list_del(listIter);
@@ -594,7 +651,7 @@ void rr_policy_exit() {
         free(node);
     }
 
-    list_for_each_safe(listIter, listIter_s, &physical_used_list) {
+    list_for_each_safe(listIter, listIter_s, &_rr_physical_used_list) {
         struct optEludeList* node = list_entry(listIter, struct optEludeList, iulist);
 
         list_del(listIter);

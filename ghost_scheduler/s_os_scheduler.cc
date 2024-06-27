@@ -58,7 +58,7 @@ namespace ghost {
             CHECK_NE(cs->agent, nullptr);
         }
 
-        policy->functions->init(MAX_CPUS);
+        policy->functions->init(last_index);
 
         trace("TRACE: exiting ghost::scheduler::EnclaveReady\n");
     }

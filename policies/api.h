@@ -125,12 +125,9 @@ struct virtual_resource {
     struct optEludeList * physical_resource;
     int process;
     unsigned long utilisation;
+    struct timespec last_start;
     unsigned long last_event_id;
 };
-
-static unsigned long NO_RESOURCE = ULONG_MAX;
-
-extern pthread_mutex_t resourceListLock;
 
 
 static inline void insertResource(struct resource **resourceList, unsigned long physicalId, int pos) {
@@ -221,6 +218,8 @@ static void add_event(struct sOSEvent* event, enum eventType eventType, struct t
     fprintf(fptr, "\n");
     fclose(fptr);
 }
+
+
 
 extern int submitResourceList(struct sOSEvent* event, struct list_head* resource_to_submit);
 

@@ -155,6 +155,7 @@ static inline void hold_used_pages_impl(struct list_head* pages) {
 
 create_usm_bindings(policy1, policy1_detail)
 create_usm_bindings(fifo, fifo_policy_detail)
+create_usm_bindings(round_robin, rr_policy_detail)
 
 
 static inline void initResources(unsigned long resourceSize) {
@@ -181,6 +182,11 @@ int policy_alloc_setup(unsigned int pagesNumber) {
     register_policy(fifo, fifo_policy_detail)
     if (fifo_policy_detail.functions->init) {
         fifo_policy_detail.functions->init(pagesNumber);
+    }
+
+    register_policy(round_robin, rr_policy_detail)
+    if (rr_policy_detail.functions->init) {
+        rr_policy_detail.functions->init(pagesNumber);
     }
 
     get_pages=&get_pages_impl;

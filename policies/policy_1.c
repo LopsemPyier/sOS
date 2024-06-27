@@ -320,5 +320,5 @@ struct policy_function policy_1_functions = {
 struct policy_detail policy1_detail = {
         .name = "policy1",
         .functions = &policy_1_functions,
-        .is_default = true
+        .is_default = false
 };
