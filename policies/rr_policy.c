@@ -162,7 +162,7 @@ trace("TRACE: exiting rr_policy::select_phys_to_virt\n");
     }
 
     printf("The free list is : ");
-    display_physical_list(&_rr_physical_free_list);
+    // display_physical_list(&_rr_physical_free_list);
     printf("\n");
 
 
@@ -222,23 +222,23 @@ trace("TRACE: exiting rr_policy::select_virtual_to_load\n");
     }
 
     printf("The valid queue is : ");
-    display_virtual_list(&_rr_virtual_valid_queue);
+    // display_virtual_list(&_rr_virtual_valid_queue);
     printf("\n");
 
     printf("The on_resource queue is : ");
-    display_virtual_list(&_rr_virtual_on_ressource_queue);
+    // display_virtual_list(&_rr_virtual_on_ressource_queue);
     printf("\n");
 
     printf("The invalid queue is : ");
-    display_virtual_list(&_rr_virtual_invalid_queue);
+    // display_virtual_list(&_rr_virtual_invalid_queue);
     printf("\n");
 
     printf("The free list is : ");
-    display_physical_list(&_rr_physical_free_list);
+    // display_physical_list(&_rr_physical_free_list);
     printf("\n");
 
     printf("The used list is : ");
-    display_physical_list(&_rr_physical_used_list);
+    // display_physical_list(&_rr_physical_used_list);
     printf("\n");
 
     struct optVirtualResourceList* virtualResource = list_first_entry(&_rr_virtual_valid_queue, struct optVirtualResourceList, iulist);

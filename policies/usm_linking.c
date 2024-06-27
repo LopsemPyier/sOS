@@ -3,4 +3,4 @@
 //
 #include "usm_linking.h"
 
-char const *filename = "allocator_fifo_stats.csv";
+char const *filename = "allocator_rr_stats.csv";

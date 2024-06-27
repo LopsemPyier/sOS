@@ -220,7 +220,6 @@ static void add_event(struct sOSEvent* event, enum eventType eventType, struct t
 }
 
 
-
 extern int submitResourceList(struct sOSEvent* event, struct list_head* resource_to_submit);
 
 #endif //SOS_API_H

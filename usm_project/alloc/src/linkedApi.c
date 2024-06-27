@@ -69,6 +69,10 @@ static inline int usm_alloc_impl(struct usm_event *usmEvent, struct policy_funct
 
         printf("Associating virtual_id %lu to physical_id %lu\n", event->virtual_id, event->physical_id);
 
+        struct page* page = get_usm_page_from_paddr(event->physical_id);
+        page->virtualAddress = event->virtual_id;
+        page->process = event->attached_process;
+
         if (usmEvent->paddr == 0) {
             usmEvent->paddr = event->physical_id;
         } else if (vpfn == -1) {
@@ -109,6 +113,27 @@ static inline int usm_alloc_impl(struct usm_event *usmEvent, struct policy_funct
 
 static inline int usm_pindex_free_impl(struct usm_event *usmEvent, struct policy_function *policy) {
     trace("TRACE: entering sOS::API::usm_pindex_free_impl\n");
+
+    struct page * usmPage = usmEventToPage(usmEvent);
+
+    if (!usmPage) {
+        trace("TRACE: exiting sOS::API::usm_pindex_free_impl -- error no page found\n");
+        return 1;
+    }
+
+    struct sOSEvent *event = (struct sOSEvent*) malloc(sizeof(struct sOSEvent));
+
+    event->attached_process = usmEvent->origin;
+    event->physical_id = usmPage->physicalAddress;
+    event->virtual_id = usmPage->virtualAddress;
+
+    if (policy->on_yield(event)) {
+        trace("TRACE: exiting sOS::API::usm_pindex_free_impl -- error\n");
+        return 1;
+    }
+
+    memset((void*)(usmPage->data), 0, 4096);
+
     trace("TRACE: exiting sOS::API::usm_pindex_free_impl\n");
     return 0;
 }

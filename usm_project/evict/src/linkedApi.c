@@ -30,7 +30,6 @@ if (usm_register_swap_policy(&usm_swap_policy_ops_name(policy_name), policy.name
 pthread_mutex_t policiesSet1Swaplock;
 LIST_HEAD(swapList);
 
-
 struct list_head * getSwapNode(struct usm_swap_dev * swapDevice){
     struct list_head * swap_node=NULL;
     pthread_mutex_lock(&swapDevice->devListLock);
@@ -54,14 +53,14 @@ int s_os_write_page_to_swap(struct to_swap* node ) {
     if (usm_clear_and_set(node->proc, node->swapped_address, swap_value(node), 0)) {
         return 1;
     }
-    if (fseeko((FILE *)victimNode->swapDevice->backend, victimNode->snode->offset, SEEK_SET)) {
-        if(usm_set_pfn(victimNode->proc,victimNode->swapped_address,victimNode->page->physicalAddress, 0))      // drop_swp_out/*_and_free*/...
+    if (fseeko((FILE *)node->swapDevice->backend, node->snode->offset, SEEK_SET)) {
+        if(usm_set_pfn(node->proc,node->swapped_address,node->page->physicalAddress, 0))      // drop_swp_out/*_and_free*/...
             getchar();
         // restore_used_page(&((struct optEludeList *)(victimNode->page->usedListPositionPointer))->iulist);
         return 1;
     }
-    if (unlikely(fwrite((void*)(victimNode->page->data),SYS_PAGE_SIZE,1,(FILE *)victimNode->swapDevice->backend)!=1)) {
-        if(usm_set_pfn(victimNode->proc,victimNode->swapped_address,victimNode->page->physicalAddress, 0))
+    if (unlikely(fwrite((void*)(node->page->data),SYS_PAGE_SIZE,1,(FILE *)node->swapDevice->backend)!=1)) {
+        if(usm_set_pfn(node->proc,node->swapped_address,node->page->physicalAddress, 0))
             getchar();
         // restore_used_page(&((struct optEludeList *)(victimNode->page->usedListPositionPointer))->iulist);
         return 1;
@@ -71,7 +70,7 @@ int s_os_write_page_to_swap(struct to_swap* node ) {
 }
 
 int s_os_read_page_from_swap(struct to_swap* node, struct page* usmPage) {
-    if (fseeko((FILE *)luckyNode->swapDevice->backend, luckyNode->snode->offset, SEEK_SET)) {
+    if (fseeko((FILE *)node->swapDevice->backend, node->snode->offset, SEEK_SET)) {
         return 1;
     }
     if (unlikely(fread((void*)usmPage->data,SYS_PAGE_SIZE,1,(FILE *)node->swapDevice->backend)!=1)) {
@@ -91,6 +90,7 @@ int swap_out(struct to_swap * node) {
 
     if (s_os_write_page_to_swap(node)) {
         putSwapNode(node->swapDevice,&node->snode->iulist);
+        return 1;
     }
 
     list_del(&node->iulist);
@@ -100,7 +100,7 @@ int swap_out(struct to_swap * node) {
         list_add(&node->globlist,&swapList);
         pthread_mutex_unlock(&policiesSet1Swaplock);
     } else {
-        putSwapNode(victimNode->swapDevice,&victimNode->snode->iulist);
+        putSwapNode(node->swapDevice,&node->snode->iulist);
 
         return 0;
     }
@@ -108,8 +108,16 @@ int swap_out(struct to_swap * node) {
 }
 
 int swap_in(struct to_swap * node) {
+    if (fseeko((FILE *)node->swapDevice->backend, node->snode->offset, SEEK_SET)) {
+       return 1;
+    }
 
-
+    if (unlikely(fread((void*)node->page->data,SYS_PAGE_SIZE,1,(FILE *)node->swapDevice->backend)!=1)) {
+        pthread_mutex_lock(&policiesSet1Swaplock);
+        list_add(&node->globlist,&swapList);
+        pthread_mutex_unlock(&policiesSet1Swaplock);
+        return 1;
+    }
 
     return 0;
 }
@@ -122,16 +130,39 @@ struct usm_swap_dev swap_device_one = {.number=1};
 static inline int usm_swap_impl(struct usm_event* usmEvent, struct policy_function* policy) {
     trace("TRACE: entering sOS::API::usm_swap_impl\n");
 
-    struct sOSEvent *event = (struct sOSEvent*) malloc(sizeof(struct sOSEvent));
+    struct to_swap *node = event_to_swap_entry(usmEvent);
 
-    event->attached_process = usmEvent->origin;
-    event->virtual_id = usmEvent->vaddr;
-    event->virtual_nb = usmEvent->length;
-
-    if (policy->select_virtual_to_evict(event)) {
+    if (!node) {
         trace("TRACE: exiting sOS::API::usm_swap_impl -- error\n");
         return 1;
     }
+
+    struct sOSEvent *event = (struct sOSEvent*) malloc(sizeof(struct sOSEvent));
+
+    event->attached_process = node->proc;
+    event->virtual_id = node->swapped_address;
+
+    if (policy->select_phys_to_virtual(event)) {
+        trace("TRACE: exiting sOS::API::swap_in -- error\n");
+        return 1;
+    }
+
+    node->page = get_usm_page_from_paddr(event->physical_id);
+
+    if (node->swapDevice->swap_dev_ops.swap_in(node)) {
+        policy->on_invalid(event);
+
+        trace("TRACE: exiting sOS::API::usm_swap_impl -- error\n");
+        return 1;
+    }
+
+    usmEvent->paddr = node->page->physicalAddress;
+    if (usmSubmitAllocEvent(usmEvent)) {
+        trace("TRACE: exiting sOS::API::usm_swap_impl -- error\n");
+        return 1;
+    }
+
+    free(event);
 
     trace("TRACE: exiting sOS::API::usm_swap_impl\n");
     return 0;
@@ -157,16 +188,29 @@ static inline int usm_free_impl(struct usm_event* usmEvent, struct policy_functi
 
 void handle_evict_request_impl(struct usm_event* usmEvent) {
     trace("TRACE: entering sOS::API::handle_evict_request\n");
+
+    // policy->on_yield(first_page)
+    // device->swap_out()
+
     trace("TRACE: exiting sOS::API::handle_evict_request\n");
 }
 
 void check_swap_out_impl(struct usm_event* usmEvent) {
     trace("TRACE: entering sOS::API::check_swap_out\n");
+
+    // policy->select_virtual_to_evict()
+    // policy->on_yield()
+    // device->swap_out
+
     trace("TRACE: exiting sOS::API::check_swap_out\n");
 }
 
 void check_swap_in_impl(struct usm_event* usmEvent) {
     trace("TRACE: entering sOS::API::check_swap_in\n");
+
+    // policy->select_virtual_to_load()
+    // device->swap_in
+
     trace("TRACE: exiting sOS::API::check_swap_in\n");
 }
 
@@ -174,14 +218,14 @@ struct usm_swap_dev * number_to_swap_dev_impl (int n) {
     trace("TRACE: entering sOS::API::number_to_swap_dev\n");
     trace("TRACE: exiting sOS::API::number_to_swap_dev\n");
 
-    return NULL;
+    return &swap_device_one;
 }
 
 struct usm_swap_dev * pick_swap_device_impl (int proc) {
     trace("TRACE: entering sOS::API::pick_swap_device\n");
     trace("TRACE: exiting sOS::API::pick_swap_device\n");
 
-    return NULL;
+    return &swap_device_one;
 }
 
 create_usm_bindings(policy1, policy1_detail)
@@ -201,14 +245,15 @@ int policy1_evict_setup(unsigned int pagesNumber) {
     swap_device_one.swap_dev_ops=swap_device_one_ops;
     char * swapFileName = (char *) malloc (85);
     strcat(swapFileName, "/tmp/usmSwapFile");
-    swap_device_one.backend=fopen(swapFileName,"wb+");
+    swap_device_one.backend=fopen("/tmp/usmSwapFile","wb+");
     if(!swap_device_one.backend) {
-        trace("TRACE: exiting sOS::API::evict_setup -- error\n");
+        trace("TRACE: exiting sOS::API::evict_setup -- error can't open file\n");
+        perror("Failed: ");
         return 1;
     }
 
     if (init_swap_device_nodes(&swap_device_one, (unsigned long)100*1024*1024)) {
-        trace("TRACE: exiting sOS::API::evict_setup -- error\n");
+        trace("TRACE: exiting sOS::API::evict_setup -- error can't init device\n");
         return 1;
     }
 
