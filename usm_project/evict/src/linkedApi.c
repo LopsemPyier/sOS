@@ -127,6 +127,20 @@ struct usm_swap_dev_ops swap_device_one_ops = {.swap_in=swap_in, .swap_out=swap_
 struct usm_swap_dev swap_device_one = {.number=1};
 
 
+struct usm_swap_dev * number_to_swap_dev_impl (int n) {
+    trace("TRACE: entering sOS::API::number_to_swap_dev\n");
+    trace("TRACE: exiting sOS::API::number_to_swap_dev\n");
+
+    return &swap_device_one;
+}
+
+struct usm_swap_dev * pick_swap_device_impl (int proc) {
+    trace("TRACE: entering sOS::API::pick_swap_device\n");
+    trace("TRACE: exiting sOS::API::pick_swap_device\n");
+
+    return &swap_device_one;
+}
+
 static inline int usm_swap_impl(struct usm_event* usmEvent, struct policy_function* policy) {
     trace("TRACE: entering sOS::API::usm_swap_impl\n");
 
@@ -182,6 +196,8 @@ static inline int usm_free_impl(struct usm_event* usmEvent, struct policy_functi
         return 1;
     }
 
+    free(event);
+
     trace("TRACE: exiting sOS::API::usm_swap_impl\n");
     return 0;
 }
@@ -197,6 +213,44 @@ void handle_evict_request_impl(struct usm_event* usmEvent) {
 
 void check_swap_out_impl(struct usm_event* usmEvent) {
     trace("TRACE: entering sOS::API::check_swap_out\n");
+    struct sOSEvent *event = (struct sOSEvent*) malloc(sizeof(struct sOSEvent));
+
+    event->attached_process = usmEvent->origin;
+    struct resource resource;
+    struct to_swap* node = (struct to_swap *) malloc(sizeof(struct to_swap));
+
+    for (unsigned long i = 0; i < nb_resources; i++) {
+        resource = resourceList[i];
+
+        if (!resource.virtualResource)
+            continue;
+
+        event->physical_id = resource.physicalId;
+
+        if (!rr_policy_detail.functions->select_virtual_to_evict(event)) {
+            struct usm_swap_dev* swapDev = pick_swap_device_impl(usmEvent->origin);
+
+            if (swapDev) {
+                struct page * page = get_usm_page_from_paddr(resource.physicalId)
+
+                node->page = page;
+                node->proc = page->process;
+                node->swapDevice = swapDev;
+                node->swapped_address = event->virtual_id;
+                node->snode = list_entry(getSwapNode(swapDev), struct swap_node, iulist);
+                node->snode->toSwapHolder = (void *)node;
+
+                if (swapDev->swap_dev_ops.swap_in(node))
+                    printf("Swapped in of %lu to %lu failed!\n", event->physical_id, event->virtual_id);
+                else
+                    printf("Swapped in of %lu to %lu.\n", event->physical_id, event->virtual_id);
+
+            }
+        }
+    }
+
+    free(node);
+    free(event);
 
     // policy->select_virtual_to_evict()
     // policy->on_yield()
@@ -208,32 +262,58 @@ void check_swap_out_impl(struct usm_event* usmEvent) {
 void check_swap_in_impl(struct usm_event* usmEvent) {
     trace("TRACE: entering sOS::API::check_swap_in\n");
 
-    // policy->select_virtual_to_load()
-    // device->swap_in
+    struct sOSEvent *event = (struct sOSEvent*) malloc(sizeof(struct sOSEvent));
+
+    event->attached_process = usmEvent->origin;
+    struct resource resource;
+    struct to_swap* node = (struct to_swap *) malloc(sizeof(struct to_swap));
+
+    for (unsigned long i = 0; i < nb_resources; i++) {
+        resource = resourceList[i];
+
+        if (resource.virtualResource)
+            continue;
+
+        event->physical_id = resource.physicalId;
+
+        if (!rr_policy_detail.functions->select_virtual_to_load(event)) {
+            struct usm_swap_dev* swapDev = pick_swap_device_impl(usmEvent->origin);
+
+            if (swapDev) {
+                struct page * page = get_usm_page_from_paddr(resource.physicalId)
+
+                node->page = page;
+                node->proc = page->process;
+                node->swapDevice = swapDev;
+                node->swapped_address = event->virtual_id;
+                node->snode = list_entry(getSwapNode(swapDev), struct swap_node, iulist);
+                node->snode->toSwapHolder = (void *)node;
+
+                if (swapDev->swap_dev_ops.swap_in(node))
+                    printf("Swapped in of %lu to %lu failed!\n", event->physical_id, event->virtual_id);
+                else
+                    printf("Swapped in of %lu to %lu.\n", event->physical_id, event->virtual_id);
+
+            }
+        }
+    }
+
+    free(node);
+    free(event);
 
     trace("TRACE: exiting sOS::API::check_swap_in\n");
 }
 
-struct usm_swap_dev * number_to_swap_dev_impl (int n) {
-    trace("TRACE: entering sOS::API::number_to_swap_dev\n");
-    trace("TRACE: exiting sOS::API::number_to_swap_dev\n");
-
-    return &swap_device_one;
-}
-
-struct usm_swap_dev * pick_swap_device_impl (int proc) {
-    trace("TRACE: entering sOS::API::pick_swap_device\n");
-    trace("TRACE: exiting sOS::API::pick_swap_device\n");
-
-    return &swap_device_one;
-}
-
 create_usm_bindings(policy1, policy1_detail)
+create_usm_bindings(fifo, fifo_policy_detail)
+create_usm_bindings(round_robin, rr_policy_detail)
 
 int policy1_evict_setup(unsigned int pagesNumber) {
     trace("TRACE: entering sOS::API::evict_setup\n");
 
     register_policy(policy1, policy1_detail)
+    register_policy(fifo, fifo_policy_detail)
+    register_policy(round_robin, rr_policy_detail)
 
     usm_evict_fallback = &handle_evict_request_impl;
     do_cond_swap_out = &check_swap_out_impl;

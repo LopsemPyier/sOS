@@ -178,6 +178,13 @@ static inline int fifo_policy_select_virtual_to_load(struct sOSEvent* event) {
     struct timespec start, end;
     clock_gettime(CLOCK_MONOTONIC_RAW, &start);
 
+    struct optEludeList * physicalResource = _fifo_get_physical_resource(&_fifo_physical_used_list, event->physical_id);
+
+    if (physicalResource && physicalResource->resource->virtualResource) {
+//        trace("TRACE: exiting fifo_policy::select_virtual_to_load -- already in use\n");
+        return 1;
+    }
+
     if (list_empty(&_fifo_virtual_valid_queue)) {
         // trace("TRACE: exiting fifo_policy::select_virtual_to_load -- empty\n");
         return 1;
@@ -185,7 +192,7 @@ static inline int fifo_policy_select_virtual_to_load(struct sOSEvent* event) {
 
     struct optVirtualResourceList* virtualResource = list_first_entry(&_fifo_virtual_valid_queue, struct optVirtualResourceList, iulist);
 
-    struct optEludeList * physicalResource = _fifo_get_physical_resource(&_fifo_physical_free_list, event->physical_id);
+    physicalResource = _fifo_get_physical_resource(&_fifo_physical_free_list, event->physical_id);
 
     if (!physicalResource) {
         trace("TRACE: exiting fifo_policy::select_virtual_to_load -- error\n");

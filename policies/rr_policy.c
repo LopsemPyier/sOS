@@ -213,7 +213,7 @@ static inline int rr_policy_select_virtual_to_load(struct sOSEvent* event) {
         if (!physicalResource) {
             printf("error physical %lu not found\n", event->physical_id);
 trace("TRACE: exiting rr_policy::select_virtual_to_load\n");
-            return 0;
+            return 1;
         }
     }
 
