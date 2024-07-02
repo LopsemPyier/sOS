@@ -41,16 +41,10 @@ static inline int usm_alloc_impl(struct usm_event *usmEvent, struct policy_funct
 
     struct sOSEvent *event = (struct sOSEvent*) malloc(sizeof(struct sOSEvent));
 
-    struct optEventList* optEvent = (struct optEventList*) malloc(sizeof(struct optEventList));
-
-    optEvent->event = usmEvent;
-
-    INIT_LIST_HEAD(&optEvent->iulist);
-    list_add_tail(&(optEvent->iulist), &eventList);
 
     event->attached_process = usmEvent->origin;
     event->virtual_id = usmEvent->vaddr;
-    event->event_id = 0;
+    event->event_id = (unsigned long) usmEvent->usmmem;
 
     printf("Created sOSEvent\n");
     printf("Allocation of vaddr %ld to paddr %ld\n", usmEvent->vaddr, usmEvent->paddr);

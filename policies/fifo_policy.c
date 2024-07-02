@@ -4,19 +4,8 @@
 
 #include "fifo_policy.h"
 
-LIST_HEAD(_fifo_virtual_on_ressource_queue);
-LIST_HEAD(_fifo_virtual_valid_queue);
-LIST_HEAD(_fifo_virtual_invalid_queue);
-
-LIST_HEAD(_fifo_physical_free_list);
-LIST_HEAD(_fifo_physical_used_list);
 
 pthread_mutex_t _fifo_resourceListLock;
-pthread_mutex_t _fifo_virtualOnResourceQueueLock;
-pthread_mutex_t _fifo_virtualValidQueueLock;
-pthread_mutex_t _fifo_virtualInvalidQueueLock;
-pthread_mutex_t _fifo_physicalUsedListLock;
-pthread_mutex_t _fifo_physicalFreeListLock;
 int _fifo_nb_resources;
 
 
@@ -66,64 +55,6 @@ struct policy_detail fifo_policy_detail = {
         .is_default = false
 };
 
-struct optVirtualResourceList* _fifo_get_virtual_resource(struct list_head* list, unsigned long virtualId) {
-    struct optVirtualResourceList *virtualResource;
-    list_for_each_entry(virtualResource, list, iulist) {
-        if (virtualResource->resource->virtualId == virtualId) {
-            break;
-        }
-    }
-    if (&virtualResource->iulist == list)
-        return NULL;
-    else
-        return virtualResource;
-}
-
-struct optEludeList* _fifo_get_physical_resource(struct list_head* list, unsigned long physicalId) {
-    struct optEludeList *physicalResource;
-    list_for_each_entry(physicalResource, list, iulist) {
-        if (physicalResource->resource->physicalId == physicalId) {
-            break;
-        }
-    }
-    if (&physicalResource->iulist == list)
-        return NULL;
-    else
-        return physicalResource;
-}
-
-void _fifo_move_list_safe(struct list_head * item, struct list_head * dest, pthread_mutex_t* lock1, pthread_mutex_t* lock2) {
-    LIST_HEAD(tmp);
-
-    pthread_mutex_lock(lock1);
-    list_move_tail(item, &tmp);
-    pthread_mutex_unlock(lock1);
-
-    pthread_mutex_lock(lock2);
-    list_move_tail(item, dest);
-    pthread_mutex_unlock(lock2);
-}
-
-void _fifo_put_virtual_on_physical(struct optVirtualResourceList* virtual, struct optEludeList* physical) {
-    _fifo_move_list_safe(&virtual->iulist, &_fifo_virtual_on_ressource_queue, &_fifo_virtualValidQueueLock, &_fifo_virtualOnResourceQueueLock);
-    _fifo_move_list_safe(&physical->iulist, &_fifo_physical_used_list, &_fifo_physicalFreeListLock, &_fifo_physicalUsedListLock);
-
-    pthread_mutex_lock(&physical->resource->lock);
-    physical->resource->virtualResource = virtual;
-    pthread_mutex_unlock(&physical->resource->lock);
-    virtual->resource->physical_resource = physical;
-}
-
-void _fifo_put_virtual_off_physical(struct optVirtualResourceList* virtual, struct optEludeList* physical) {
-    _fifo_move_list_safe(&virtual->iulist, &_fifo_virtual_valid_queue, &_fifo_virtualOnResourceQueueLock, &_fifo_virtualValidQueueLock);
-    _fifo_move_list_safe(&physical->iulist, &_fifo_physical_free_list, &_fifo_physicalUsedListLock, &_fifo_physicalFreeListLock);
-
-    pthread_mutex_lock(&physical->resource->lock);
-    physical->resource->virtualResource = NULL;
-    pthread_mutex_unlock(&physical->resource->lock);
-    virtual->resource->physical_resource = NULL;
-}
-
 
 static inline int fifo_policy_select_phys_to_virtual(struct sOSEvent *event) {
     trace("TRACE: entering fifo_policy::select_phys_to_virt\n");
@@ -131,22 +62,17 @@ static inline int fifo_policy_select_phys_to_virtual(struct sOSEvent *event) {
     struct timespec start, end;
     clock_gettime(CLOCK_MONOTONIC_RAW, &start);
 
+    struct optEludeList * phys = get_first_physical_available();
 
-    struct optVirtualResourceList* virtualResource = _fifo_get_virtual_resource(&_fifo_virtual_valid_queue, event->virtual_id);
-    if (!virtualResource) {
-        trace("TRACE: exiting fifo_policy::select_phys_to_virt -- error virtual not found\n");
-        return 1;
-    }
-
-    if (list_empty(&_fifo_physical_free_list)) {
+    if (!phys) {
         trace("TRACE: exiting fifo_policy::select_phys_to_virt -- error no free physical\n");
         return 1;
     }
 
-
-    struct optEludeList * phys = list_first_entry(&_fifo_physical_free_list, struct optEludeList, iulist);
-
-    _fifo_put_virtual_on_physical(virtualResource, phys);
+    if (put_virtual_on_physical(event->virtual_id, phys->resource->physicalId)) {
+        trace("TRACE: exiting fifo_policy::select_phys_to_virt -- error virtual not found\n");
+        return 1;
+    }
 
     event->physical_id = phys->resource->physicalId;
     unsigned long tmp = virtualResource->resource->last_event_id;
@@ -170,7 +96,7 @@ static inline int fifo_policy_select_virtual_to_evict(struct sOSEvent* event) {
     add_event(event, SELECT_VIRTUAL_TO_EVICT, start, end);
 
     trace("TRACE: exiting fifo_policy::select_virtual_to_evict\n");
-    return 0;
+    return 1;
 }
 
 static inline int fifo_policy_select_virtual_to_load(struct sOSEvent* event) {
@@ -178,28 +104,27 @@ static inline int fifo_policy_select_virtual_to_load(struct sOSEvent* event) {
     struct timespec start, end;
     clock_gettime(CLOCK_MONOTONIC_RAW, &start);
 
-    struct optEludeList * physicalResource = _fifo_get_physical_resource(&_fifo_physical_used_list, event->physical_id);
+    struct optEludeList * physicalResource = get_physical_resource( event->physical_id, &physical_available_list);
 
-    if (physicalResource && physicalResource->resource->virtualResource) {
+    if (!physicalResource) {
+        printf("Error: physical %lu not found", event->physical_id);
+        trace("TRACE: exiting fifo_policy::select_virtual_to_load -- error\n");
+        return 1;
+    }
+
+    if (physicalResource->resource->virtualResource) {
 //        trace("TRACE: exiting fifo_policy::select_virtual_to_load -- already in use\n");
         return 1;
     }
 
-    if (list_empty(&_fifo_virtual_valid_queue)) {
+    struct optVirtualResourceList* virtualResource = get_first_virtual_valid();
+
+    if (!virtualResource) {
         // trace("TRACE: exiting fifo_policy::select_virtual_to_load -- empty\n");
         return 1;
     }
 
-    struct optVirtualResourceList* virtualResource = list_first_entry(&_fifo_virtual_valid_queue, struct optVirtualResourceList, iulist);
-
-    physicalResource = _fifo_get_physical_resource(&_fifo_physical_free_list, event->physical_id);
-
-    if (!physicalResource) {
-        trace("TRACE: exiting fifo_policy::select_virtual_to_load -- error\n");
-        return 0;
-    }
-
-    _fifo_put_virtual_on_physical(virtualResource, physicalResource);
+    put_virtual_on_physical(virtualResource->resource->virtualId, physicalResource->resource->physicalId);
 
     event->virtual_id = virtualResource->resource->virtualId;
     event->event_id = virtualResource->resource->last_event_id;
@@ -218,20 +143,11 @@ static inline int fifo_policy_save_context(struct sOSEvent* event) {
     struct timespec start, end;
     clock_gettime(CLOCK_MONOTONIC_RAW, &start);
 
-    struct optVirtualResourceList* virtualResource = _fifo_get_virtual_resource(&_fifo_virtual_on_ressource_queue, event->virtual_id);
-    if (!virtualResource) {
-        trace("TRACE: exiting fifo_policy::save_context -- error virtual not found\n");
+    if (get_virtual_off_physical(event->virtual_id, event->physical_id, true)) {
+        printf("Error: virtual %lu not found or physical %lu not found.\n", event->virtual_id, event->physical_id);
+        trace("TRACE: exiting fifo_policy::save_context -- error\n");
         return 1;
     }
-
-    struct optEludeList * physicalResource = _fifo_get_physical_resource(&_fifo_physical_used_list, event->physical_id);
-
-    if (!physicalResource) {
-        trace("TRACE: exiting fifo_policy::save_context -- error physical not found\n");
-        return 0;
-    }
-
-    _fifo_put_virtual_off_physical(virtualResource, physicalResource);
 
     clock_gettime(CLOCK_MONOTONIC_RAW, &end);
     add_event(event, SAVE_CONTEXT, start, end);
@@ -246,20 +162,11 @@ static inline int fifo_policy_restore_context(struct sOSEvent* event) {
     struct timespec start, end;
     clock_gettime(CLOCK_MONOTONIC_RAW, &start);
 
-    struct optVirtualResourceList* virtualResource = _fifo_get_virtual_resource(&_fifo_virtual_valid_queue, event->virtual_id);
-    if (!virtualResource) {
-        trace("TRACE: exiting fifo_policy::restore_context -- error virtual not found\n");
+    if (put_virtual_on_physical(event->virtual_id, event->physical_id)) {
+        printf("Error: virtual %lu not found or physical %lu not found.\n", event->virtual_id, event->physical_id);
+        trace("TRACE: exiting fifo_policy::restore_context -- error\n");
         return 1;
     }
-
-    struct optEludeList * physicalResource = _fifo_get_physical_resource(&_fifo_physical_free_list, event->physical_id);
-
-    if (!physicalResource) {
-        trace("TRACE: exiting fifo_policy::restore_context -- error physical not found\n");
-        return 0;
-    }
-
-    _fifo_put_virtual_on_physical(virtualResource, physicalResource);
 
     clock_gettime(CLOCK_MONOTONIC_RAW, &end);
     add_event(event, RESTORE_CONTEXT, start, end);
@@ -274,22 +181,19 @@ static inline int fifo_policy_on_yield(struct sOSEvent *event) {
     struct timespec start, end;
     clock_gettime(CLOCK_MONOTONIC_RAW, &start);
 
+    if (get_virtual_off_physical(event->virtual_id, event->physical_id, true)) {
+        printf("Error: virtual %lu not found or physical %lu not found.\n", event->virtual_id, event->physical_id);
+        trace("TRACE: exiting fifo_policy::on_yield -- error\n");
+        return 1;
+    }
 
-    struct optVirtualResourceList* virtualResource = _fifo_get_virtual_resource(&_fifo_virtual_on_ressource_queue, event->virtual_id);
+    struct optVirtualResourceList* virtualResource = get_virtual_resource(event->virtual_id, &virtual_valid_queue);
     if (!virtualResource) {
         trace("TRACE: exiting fifo_policy::on_yield -- error virtual not found\n");
         return 1;
     }
 
-    if (virtualResource->resource->physical_resource) {
-        struct optEludeList* physicalResource = virtualResource->resource->physical_resource;
-        _fifo_put_virtual_off_physical(virtualResource, physicalResource);
-    } else {
-        _fifo_move_list_safe(&(virtualResource->iulist), &_fifo_virtual_valid_queue, &_fifo_virtualOnResourceQueueLock, &_fifo_virtualValidQueueLock);
-    }
-
     virtualResource->resource->last_event_id = event->event_id;
-
 
     clock_gettime(CLOCK_MONOTONIC_RAW, &end);
     add_event(event, ON_YIELD, start, end);
@@ -300,12 +204,10 @@ static inline int fifo_policy_on_yield(struct sOSEvent *event) {
 static inline int fifo_policy_on_ready(struct sOSEvent* event) {
     trace("TRACE: entering fifo_policy::on_ready\n");
 
-
     struct timespec start, end;
     clock_gettime(CLOCK_MONOTONIC_RAW, &start);
 
-
-    struct optVirtualResourceList* virtualResource = _fifo_get_virtual_resource(&_fifo_virtual_invalid_queue, event->virtual_id);
+    struct optVirtualResourceList* virtualResource = get_virtual_resource( event->virtual_id, &virtual_invalid_queue);
     if (!virtualResource) {
         trace("TRACE: exiting fifo_policy::on_ready -- error\n");
         return 1;
@@ -314,7 +216,7 @@ static inline int fifo_policy_on_ready(struct sOSEvent* event) {
     virtualResource->resource->last_event_id = event->event_id;
     virtualResource->resource->physical_resource = NULL;
 
-    _fifo_move_list_safe(&(virtualResource->iulist), &_fifo_virtual_valid_queue, &_fifo_virtualInvalidQueueLock, &_fifo_virtualValidQueueLock);
+    virtual_move_to(virtualResource, &virtual_invalid_queue, &virtual_valid_queue);
 
     clock_gettime(CLOCK_MONOTONIC_RAW, &end);
     add_event(event, ON_READY, start, end);
@@ -326,30 +228,22 @@ static inline int fifo_policy_on_ready(struct sOSEvent* event) {
 static inline int fifo_policy_on_invalid(struct sOSEvent* event) {
     trace("TRACE: entering fifo_policy::on_invalid\n");
 
-
     struct timespec start, end;
     clock_gettime(CLOCK_MONOTONIC_RAW, &start);
 
+    if (get_virtual_off_physical(event->virtual_id, event->physical_id)) {
 
-    bool on_resource = true;
-    struct optVirtualResourceList* virtualResource = _fifo_get_virtual_resource(&_fifo_virtual_on_ressource_queue, event->virtual_id);
-    if (!virtualResource) {
-        on_resource = false;
-        virtualResource = _fifo_get_virtual_resource(&_fifo_virtual_valid_queue, event->virtual_id);
-        if(!virtualResource) {
-            trace("TRACE: exiting fifo_policy::on_ready -- error\n");
-            return 1;
-        }
     }
 
-    if (virtualResource->resource->physical_resource) {
-        struct optEludeList* physicalResource = virtualResource->resource->physical_resource;
-        _fifo_put_virtual_off_physical(virtualResource, physicalResource);
+    struct optVirtualResourceList* virtualResource = get_virtual_resource(event->virtual_id, &virtual_valid_queue);
+    if (!virtualResource) {
+        trace("TRACE: exiting fifo_policy::on_ready -- error\n");
+        return 1;
     }
 
     virtualResource->resource->last_event_id = event->event_id;
 
-    _fifo_move_list_safe(&(virtualResource->iulist), &_fifo_virtual_invalid_queue, &_fifo_virtualValidQueueLock, &_fifo_virtualInvalidQueueLock);
+    virtual_move_to(virtualResource, &virtual_valid_queue, &virtual_invalid_queue);
 
     clock_gettime(CLOCK_MONOTONIC_RAW, &end);
     add_event(event, ON_INVALID, start, end);
@@ -386,21 +280,9 @@ static inline int fifo_policy_on_create_thread(struct sOSEvent* event) {
     struct timespec start, end;
     clock_gettime(CLOCK_MONOTONIC_RAW, &start);
 
-    struct optVirtualResourceList* virtualResource = (struct optVirtualResourceList*) malloc(sizeof (struct optVirtualResourceList));
+    struct optVirtualResourceList* virtualResource = add_virtual_resource(event->virtual_id, event->attached_process);
 
-    INIT_LIST_HEAD(&(virtualResource->iulist));
-
-    virtualResource->resource = (struct virtual_resource*) malloc(sizeof (struct virtual_resource));
-
-    virtualResource->resource->physical_resource = NULL;
-    virtualResource->resource->virtualId = event->virtual_id;
     virtualResource->resource->last_event_id = event->event_id;
-    virtualResource->resource->process = event->attached_process;
-    virtualResource->resource->utilisation = 0;
-
-    pthread_mutex_lock(&_fifo_virtualInvalidQueueLock);
-    list_add_tail(&(virtualResource->iulist), &_fifo_virtual_invalid_queue);
-    pthread_mutex_unlock(&_fifo_virtualInvalidQueueLock);
 
     clock_gettime(CLOCK_MONOTONIC_RAW, &end);
     add_event(event, ON_CREATE_THREAD, start, end);
@@ -411,48 +293,11 @@ static inline int fifo_policy_on_create_thread(struct sOSEvent* event) {
 static inline int fifo_policy_on_dead_thread(struct sOSEvent* event) {
     trace("TRACE: entering fifo_policy::on_dead_thread\n");
 
-
     struct timespec start, end;
     clock_gettime(CLOCK_MONOTONIC_RAW, &start);
 
-    struct optVirtualResourceList* virtualResource = _fifo_get_virtual_resource(&_fifo_virtual_on_ressource_queue, event->virtual_id);
-    if (!virtualResource) {
-        virtualResource = _fifo_get_virtual_resource(&_fifo_virtual_valid_queue, event->virtual_id);
-        if (!virtualResource) {
-            virtualResource = _fifo_get_virtual_resource(&_fifo_virtual_invalid_queue, event->virtual_id);
-            if (!virtualResource) {
-                trace("TRACE: exiting fifo_policy::on_dead_thread -- error\n");
-                return 1;
-            } else {
-                pthread_mutex_lock(&_fifo_virtualInvalidQueueLock);
-                list_del(&(virtualResource->iulist));
-                pthread_mutex_unlock(&_fifo_virtualInvalidQueueLock);
-            }
-        } else {
-            pthread_mutex_lock(&_fifo_virtualValidQueueLock);
-            list_del(&(virtualResource->iulist));
-            pthread_mutex_unlock(&_fifo_virtualValidQueueLock);
-        }
-    } else {
-        pthread_mutex_lock(&_fifo_virtualOnResourceQueueLock);
-        list_del(&(virtualResource->iulist));
-        pthread_mutex_unlock(&_fifo_virtualOnResourceQueueLock);
-    }
-
-    if (virtualResource->resource->physical_resource) {
-        struct optEludeList* physicalResource = virtualResource->resource->physical_resource;
-        pthread_mutex_lock(&physicalResource->resource->lock);
-        physicalResource->resource->virtualResource = NULL;
-        pthread_mutex_unlock(&physicalResource->resource->lock);
-
-        _fifo_move_list_safe(&physicalResource->iulist, &_fifo_physical_free_list, &_fifo_physicalUsedListLock, &_fifo_physicalFreeListLock);
-    }
-
-    virtualResource->resource->last_event_id = event->event_id;
-    virtualResource->resource->physical_resource = NULL;
-
-    free(virtualResource->resource);
-    free(virtualResource);
+    remove_virtual_resource(event->virtual_id);
+    remove_virtual_resources_of_proc(event->attached_process);
 
     clock_gettime(CLOCK_MONOTONIC_RAW, &end);
     add_event(event, ON_DEAD_THREAD, start, end);
@@ -464,6 +309,38 @@ static inline int fifo_policy_on_sleep_state_change(struct sOSEvent* event) {
     trace("TRACE: entering fifo_policy::on_sleep_state_change\n");
     struct timespec start, end;
     clock_gettime(CLOCK_MONOTONIC_RAW, &start);
+
+    if (event->sleep == AVAILABLE) {
+        struct optEludeList* physical = get_physical_resource(event->physical_id, &physical_used_list);
+
+        if (!physical) {
+            printf("Error: physical %lu not found\n", event->physical_id);
+            trace("TRACE: exiting fifo_policy::on_sleep_state_change -- error\n");
+            return 1;
+        }
+
+        physical_move_to(physical, &physical_used_list, &physical_available_list);
+    } else if (event->sleep == BUSY) {
+        struct optEludeList* physical = get_physical_resource(event->physical_id, &physical_available_list);
+
+        if (!physical) {
+            physical = get_physical_resource(event->physical_id, &physical_used_list);
+
+            if (!physical) {
+                printf("Error: physical %lu not found\n", event->physical_id);
+                trace("TRACE: exiting fifo_policy::on_sleep_state_change -- error\n");
+                return 1;
+            }
+
+            if (physical->resource->virtualResource) {
+                event->virtual_id = physical->resource->virtualResource->resource->virtualId;
+                fifo_policy_save_context(event);
+            } else
+                return 0;
+        }
+
+        physical_move_to(physical, &physical_available_list, &physical_used_list);
+    }
 
     clock_gettime(CLOCK_MONOTONIC_RAW, &end);
     add_event(event, ON_SLEEP_STATE_CHANGE, start, end);
@@ -491,20 +368,13 @@ static inline int fifo_policy_init(unsigned long numberOfResource) {
 
     _fifo_nb_resources = numberOfResource;
     pthread_mutex_init(&_fifo_resourceListLock, NULL);
-    pthread_mutex_init(&_fifo_virtualValidQueueLock, NULL);
-    pthread_mutex_init(&_fifo_virtualInvalidQueueLock, NULL);
-    pthread_mutex_init(&_fifo_physicalFreeListLock, NULL);
-    pthread_mutex_init(&_fifo_physicalUsedListLock, NULL);
-
     for (unsigned long physical_id = 0; physical_id < _fifo_nb_resources; physical_id++) {
-        struct optEludeList * resource = (struct optEludeList*)malloc(sizeof(struct optEludeList));
-
-        INIT_LIST_HEAD(&(resource->iulist));
-
-        resource->resource = &(resourceList[physical_id]);
-
-        list_add_tail(&(resource->iulist), &_fifo_physical_free_list);
+        add_physical_resource(resourceList[physical_id]);
     }
+
+    virtual_valid_queue.sorted = true;
+    virtual_valid_queue.asc = true;
+    virtual_valid_queue.sortedBy = ID;
 
     clock_gettime(CLOCK_MONOTONIC_RAW, &end);
     add_event(NULL, INIT, start, end);
@@ -521,7 +391,7 @@ void fifo_policy_exit() {
 
     struct list_head *listIter, *listIter_s;
 
-    list_for_each_safe(listIter, listIter_s, &_fifo_virtual_on_ressource_queue) {
+    list_for_each_safe(listIter, listIter_s, &virtual_on_resource_queue.lst) {
         struct optVirtualResourceList* node = list_entry(listIter, struct optVirtualResourceList, iulist);
 
         list_del(listIter);
@@ -530,7 +400,7 @@ void fifo_policy_exit() {
         free(node);
     }
 
-    list_for_each_safe(listIter, listIter_s, &_fifo_virtual_valid_queue) {
+    list_for_each_safe(listIter, listIter_s, &virtual_valid_queue.lst) {
         struct optVirtualResourceList* node = list_entry(listIter, struct optVirtualResourceList, iulist);
 
         list_del(listIter);
@@ -539,7 +409,7 @@ void fifo_policy_exit() {
         free(node);
     }
 
-    list_for_each_safe(listIter, listIter_s, &_fifo_virtual_invalid_queue) {
+    list_for_each_safe(listIter, listIter_s, &virtual_invalid_queue.lst) {
         struct optVirtualResourceList* node = list_entry(listIter, struct optVirtualResourceList, iulist);
 
         list_del(listIter);
@@ -548,7 +418,7 @@ void fifo_policy_exit() {
         free(node);
     }
 
-    list_for_each_safe(listIter, listIter_s, &_fifo_physical_free_list) {
+    list_for_each_safe(listIter, listIter_s, &physical_available_list.lst) {
         struct optEludeList* node = list_entry(listIter, struct optEludeList, iulist);
 
         list_del(listIter);
@@ -556,7 +426,7 @@ void fifo_policy_exit() {
         free(node);
     }
 
-    list_for_each_safe(listIter, listIter_s, &_fifo_physical_used_list) {
+    list_for_each_safe(listIter, listIter_s, &physical_used_list.lst) {
         struct optEludeList* node = list_entry(listIter, struct optEludeList, iulist);
 
         list_del(listIter);
