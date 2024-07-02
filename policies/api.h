@@ -60,11 +60,11 @@ enum sleepType {
 struct sOSEvent {
     unsigned long virtual_id;
     unsigned long physical_id;
-    unsigned long virtual_nb;
     unsigned int attached_process;
     unsigned long event_id;
     struct list_head* eventPosition;
     enum sleepType sleep;
+    unsigned long utilization;
 };
 
 struct policy_function {
@@ -125,6 +125,7 @@ struct virtual_resource {
     struct optEludeList * physical_resource;
     int process;
     unsigned long utilisation;
+    unsigned int priority;
     struct timespec last_start;
     unsigned long last_event_id;
 };
