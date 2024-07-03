@@ -75,6 +75,7 @@ static inline int fifo_policy_select_phys_to_virtual(struct sOSEvent *event) {
     }
 
     event->physical_id = phys->resource->physicalId;
+    struct optVirtualResourceList* virtualResource = phys->resource->virtualResource;
     unsigned long tmp = virtualResource->resource->last_event_id;
     virtualResource->resource->last_event_id = event->event_id;
 
@@ -231,7 +232,7 @@ static inline int fifo_policy_on_invalid(struct sOSEvent* event) {
     struct timespec start, end;
     clock_gettime(CLOCK_MONOTONIC_RAW, &start);
 
-    if (get_virtual_off_physical(event->virtual_id, event->physical_id)) {
+    if (get_virtual_off_physical(event->virtual_id, event->physical_id, false)) {
 
     }
 
@@ -369,7 +370,7 @@ static inline int fifo_policy_init(unsigned long numberOfResource) {
     _fifo_nb_resources = numberOfResource;
     pthread_mutex_init(&_fifo_resourceListLock, NULL);
     for (unsigned long physical_id = 0; physical_id < _fifo_nb_resources; physical_id++) {
-        add_physical_resource(resourceList[physical_id]);
+        add_physical_resource(&resourceList[physical_id]);
     }
 
     virtual_valid_queue.sorted = true;

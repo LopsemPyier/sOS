@@ -107,48 +107,7 @@ static inline int policy1_select_phys_to_virtual(struct sOSEvent *event) {
 
     return 0;
 
-    struct list_head *return_list = (struct list_head*) malloc(sizeof (struct list_head)),*pagesListIterator, *tempPageItr;
 
-    int wanted_number_of_resource = event->virtual_nb;
-    int available_resource;
-
-
-    INIT_LIST_HEAD(return_list);
-
-    wanted_number_of_resource = max(wanted_number_of_resource, 512);
-    available_resource = get_resources_ready_to_assign(return_list, wanted_number_of_resource, event);
-
-    if (available_resource != wanted_number_of_resource) {
-        struct optEludeList * resourceIter;
-        list_for_each_entry(resourceIter, return_list, iulist) {
-            list_move_tail(&resourceIter->iulist, &freeList);
-        }
-        free(return_list);
-        trace("TRACE: exiting policy1::select_phys_to_virtual - not enough pages\n");
-        return 1;
-    }
-
-    event->virtual_nb = wanted_number_of_resource;
-
-    int ret = submitResourceList(event, return_list);
-
-    if (available_resource > 1) {
-        pthread_t * p_acct = malloc(sizeof(pthread_t));
-        struct p_args_p * p_args = malloc(sizeof(struct p_args_p));
-        p_args->addr=event->virtual_id;
-        p_args->l_ps=return_list;
-        p_args->origin=event->attached_process;
-        p_args->ret=ret;
-        pthread_create(p_acct,NULL,resource_thread,p_args);
-    } else {
-        if (unlikely(ret)) {
-            give_back_resource(return_list);
-            return 1;
-        } else
-            put_resource_to_used_list(return_list, event->virtual_id, event->attached_process);
-    }
-    trace("TRACE: exiting policy1::select_phys_to_virt\n");
-    return 0;
 }
 
 static inline int policy1_select_virtual_to_evict(struct sOSEvent* event) {

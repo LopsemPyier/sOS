@@ -18,6 +18,7 @@ struct Queue {
     bool sorted;
     bool asc;
     enum SortedBy sortedBy;
+    unsigned long nb;
 };
 
 
@@ -28,7 +29,12 @@ extern struct Queue virtual_on_resource_queue;
 extern struct Queue physical_available_list;
 extern struct Queue physical_used_list;
 
-void init_queues();
+static unsigned long nb_virtual_resources() {
+    return virtual_valid_queue.nb + virtual_on_resource_queue.nb + virtual_invalid_queue.nb;
+}
+static unsigned long nb_physical_resources() {
+    return physical_used_list.nb + physical_available_list.nb;
+}
 
 struct optEludeList * get_physical_resource(unsigned long id, struct Queue * queue);
 struct optVirtualResourceList * get_virtual_resource(unsigned long id, struct Queue * queue);
@@ -55,19 +61,40 @@ bool some_virtual_valid();
 bool is_physical_available_by_id(unsigned long id);
 bool is_physical_available_by_resource(struct resource* physical);
 
+void display_physical_list(struct Queue* queue);
+void display_virtual_list(struct Queue* queue);
 
-static void display_physical_list(struct Queue* queue) {
-    struct optEludeList* phys;
-    list_for_each_entry(phys, &queue->lst, iulist) {
-        printf("%lu ", phys->resource->physicalId);
-    }
+
+static void init_queues() {
+    trace("TRACE: entering init_queues\n");
+    INIT_LIST_HEAD(&(virtual_invalid_queue.lst));
+    INIT_LIST_HEAD(&(virtual_valid_queue.lst));
+    INIT_LIST_HEAD(&(virtual_on_resource_queue.lst));
+
+    pthread_mutex_init(&(virtual_invalid_queue.lock), NULL);
+    pthread_mutex_init(&(virtual_valid_queue.lock), NULL);
+    pthread_mutex_init(&(virtual_on_resource_queue.lock), NULL);
+
+    virtual_valid_queue.sorted = false;
+    virtual_valid_queue.nb = 0;
+    virtual_invalid_queue.sorted = false;
+    virtual_invalid_queue.nb = 0;
+    virtual_on_resource_queue.sorted = false;
+    virtual_on_resource_queue.nb = 0;
+
+    INIT_LIST_HEAD(&(physical_available_list.lst));
+    INIT_LIST_HEAD(&(physical_used_list.lst));
+
+    pthread_mutex_init(&(physical_available_list.lock), NULL);
+    pthread_mutex_init(&(physical_used_list.lock), NULL);
+
+    physical_available_list.sorted = false;
+    physical_available_list.nb = 0;
+    physical_used_list.sorted = false;
+    physical_used_list.nb = 0;
+
+    trace("TRACE: exiting init_queues\n");
 }
 
-static void display_virtual_queue(struct Queue* queue) {
-    struct optVirtualResourceList* node;
-    list_for_each_entry(node, &queue->lst, iulist) {
-        printf("%lu ", node->resource->virtualId);
-    }
-}
 
 #endif //SOS_QUEUES_H

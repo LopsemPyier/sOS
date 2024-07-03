@@ -13,7 +13,6 @@
 #include <pthread.h>
 #include <limits.h>
 #include <sys/time.h>
-#include "queues.h"
 
 #define likely(x) __builtin_expect(!!(x), 1)
 #define unlikely(x) __builtin_expect(!!(x), 0)

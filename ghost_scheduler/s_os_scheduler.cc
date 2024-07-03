@@ -41,6 +41,7 @@ namespace ghost {
             CHECK(c.valid());
             global_cpu_ = c.id();
         }
+        init_queues();
         initResources(MAX_CPUS);
 
         trace("TRACE: exiting ghost::scheduler::constructor\n");
@@ -367,6 +368,11 @@ found:
             event->physical_id = payload->cpu;
         event->event_id = msg.seqnum();
 
+        uint64_t runtime = task->status_word.runtime() - task->runtime;
+        task->runtime = task->status_word.runtime();
+
+        event->utilization = runtime;
+
         policy->functions->on_yield(event);
 
         CpuState* cs = cpu_state(topology()->cpu(payload->cpu));
@@ -389,6 +395,11 @@ found:
         if (task->oncpu())
             event->physical_id = payload->cpu;
         event->event_id = msg.seqnum();
+
+        uint64_t runtime = task->status_word.runtime() - task->runtime;
+        task->runtime = task->status_word.runtime();
+
+        event->utilization = runtime;
 
         policy->functions->on_invalid(event);
 
@@ -542,25 +553,33 @@ found:
 
     void SOSScheduler::GlobalSchedule(const StatusWord &agent_sw, BarrierToken agent_sw_last) {
         // trace("TRACE: entering ghost::scheduler::GlobalSchedule\n");
+        printf("Getting Global CPU ID\n");
         const int global_cpu_id = GetGlobalCPUId();
         bool sched = false;
 
+        printf("For each CPU\n");
         for (const Cpu& cpu : cpus()) {
+            printf("Getting CPU State\n");
             CpuState* cs = cpu_state(cpu);
 
-            if (!Available(cpu))
+            printf("IsAvailable\n");
+            if (!Available(cpu)) {
                 continue;
+            }
 
             if (cpu.id() == global_cpu_id) {
                 CHECK_EQ(cs->current, nullptr);
                 continue;
             }
 
+            printf("Malloc Event\n");
             struct sOSEvent* event = (struct sOSEvent*) malloc(sizeof(struct sOSEvent));
 
+            printf("Settings values\n");
             event->physical_id = cpu.id();
             event->event_id = agent_sw_last;
 
+            printf("Select Virtual to load\n");
             if(!policy->functions->select_virtual_to_load(event)) {
                 printf("The global_cpu_id is %d while cpu id is %d\n", global_cpu_id, cpu.id());
                 if (SOSScheduler::submitEvent(event)) {
@@ -571,6 +590,7 @@ found:
                 sched = true;
             }
 
+            printf("Free event\n");
             free(event);
         }
 

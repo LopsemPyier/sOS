@@ -77,6 +77,7 @@ static inline int rr_policy_select_phys_to_virtual(struct sOSEvent *event) {
     }
 
     event->physical_id = phys->resource->physicalId;
+    struct optVirtualResourceList* virtualResource = phys->resource->virtualResource;
     unsigned long tmp = virtualResource->resource->last_event_id;
     virtualResource->resource->last_event_id = event->event_id;
 
@@ -90,8 +91,8 @@ static inline int rr_policy_select_phys_to_virtual(struct sOSEvent *event) {
 }
 
 static bool is_evict_able(struct optVirtualResourceList* virtual, struct timespec time) {
-    return (start.tv_sec - physicalResource->resource->virtualResource->resource->last_start.tv_sec) * 1000000
-        + start.tv_nsec - physicalResource->resource->virtualResource->resource->last_start.tv_nsec > preemption_time;
+    return (time.tv_sec - virtual->resource->last_start.tv_sec) * 1000000
+        + time.tv_nsec - virtual->resource->last_start.tv_nsec > preemption_time;
 }
 
 static inline int rr_policy_select_virtual_to_evict(struct sOSEvent* event) {
@@ -262,7 +263,7 @@ static inline int rr_policy_on_invalid(struct sOSEvent* event) {
     struct timespec start, end;
     clock_gettime(CLOCK_MONOTONIC_RAW, &start);
 
-    if (get_virtual_off_physical(event->virtual_id, event->physical_id)) {
+    if (get_virtual_off_physical(event->virtual_id, event->physical_id, false)) {
 
     }
 
@@ -322,7 +323,7 @@ static inline int rr_policy_on_create_thread(struct sOSEvent* event) {
 }
 
 static inline int rr_policy_on_dead_thread(struct sOSEvent* event) {
-    trace("TRACE: entering rr_policy::on_dead_thread\n")
+    trace("TRACE: entering rr_policy::on_dead_thread\n");
 
     struct timespec start, end;
     clock_gettime(CLOCK_MONOTONIC_RAW, &start);
@@ -402,7 +403,7 @@ static inline int rr_policy_init(unsigned long numberOfResource) {
     _rr_nb_resources = numberOfResource;
     pthread_mutex_init(&_rr_resourceListLock, NULL);
     for (unsigned long physical_id = 0; physical_id < _rr_nb_resources; physical_id++) {
-        add_physical_resource(resourceList[physical_id]);
+        add_physical_resource(&resourceList[physical_id]);
     }
 
 

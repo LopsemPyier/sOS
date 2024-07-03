@@ -5,7 +5,6 @@
 #include "cfs_policy.h"
 
 pthread_mutex_t _cfs_resourceListLock;
-int _cfs_nb_resources
 
 // Pre-computed weight values for each nice value. The weight values are
 // the same as ones defined in `/kernel/sched/core.c`. The values are
@@ -37,6 +36,8 @@ static unsigned long inverted_weights[40] = {
     119304647, 148102320, 186737708, 238609294, 286331153  // 15 .. 19
 };
 
+static unsigned long min_granularity = 1000; // ns
+static unsigned long latency = 10000; // ns
 
 static inline int cfs_policy_select_phys_to_virtual(struct sOSEvent *event);
 static inline int cfs_policy_select_virtual_to_evict(struct sOSEvent *event); // TODO:
@@ -101,6 +102,7 @@ static inline int cfs_policy_select_phys_to_virtual(struct sOSEvent *event) {
     }
 
     event->physical_id = phys->resource->physicalId;
+    struct optVirtualResourceList* virtualResource = phys->resource->virtualResource;
     unsigned long tmp = virtualResource->resource->last_event_id;
     virtualResource->resource->last_event_id = event->event_id;
 
@@ -113,15 +115,17 @@ static inline int cfs_policy_select_phys_to_virtual(struct sOSEvent *event) {
     return 0;
 }
 
-static inline int preemption_time(struct optVirtualResourceList* virtual) {
-    return 0;
+static inline int preemption_time() {
+    unsigned long nb_virtual = nb_virtual_resources();
+    return ((nb_virtual + 1) * min_granularity > latency) ? min_granularity : (latency + nb_virtual) / (nb_virtual + 1);
 }
 
 
 static bool is_evict_able(struct optVirtualResourceList* virtual, struct timespec time) {
-    return (start.tv_sec - physicalResource->resource->virtualResource->resource->last_start.tv_sec) * 1000000
-           + start.tv_nsec - physicalResource->resource->virtualResource->resource->last_start.tv_nsec > preemption_time(virtual);
+    return (time.tv_sec - virtual->resource->last_start.tv_sec) * 1000000
+           + time.tv_nsec - virtual->resource->last_start.tv_nsec > preemption_time();
 }
+
 
 static inline int cfs_policy_select_virtual_to_evict(struct sOSEvent* event) {
     trace("TRACE: entering cfs_policy::select_virtual_to_evict\n");
@@ -235,17 +239,16 @@ static inline int cfs_policy_on_yield(struct sOSEvent *event) {
     clock_gettime(CLOCK_MONOTONIC_RAW, &start);
 
 
-    struct optVirtualResourceList* virtualResource = _cfs_get_virtual_resource(&_cfs_virtual_on_ressource_queue, event->virtual_id);
-    if (!virtualResource) {
-        trace("TRACE: exiting cfs_policy::on_yield -- error virtual not found\n");
+    if (get_virtual_off_physical(event->virtual_id, event->physical_id, true)) {
+        printf("Error: virtual %lu not found or physical %lu not found.\n", event->virtual_id, event->physical_id);
+        trace("TRACE: exiting cfs_policy::on_yield -- error\n");
         return 1;
     }
 
-    if (virtualResource->resource->physical_resource) {
-        struct optEludeList* physicalResource = virtualResource->resource->physical_resource;
-        _cfs_put_virtual_off_physical(virtualResource, physicalResource);
-    } else {
-        _cfs_move_to_valid_queue_safe(virtualResource, &_cfs_virtualOnResourceQueueLock);
+    struct optVirtualResourceList* virtualResource = get_virtual_resource(event->virtual_id, &virtual_valid_queue);
+    if (!virtualResource) {
+        trace("TRACE: exiting cfs_policy::on_yield -- error virtual not found\n");
+        return 1;
     }
 
     virtualResource->resource->last_event_id = event->event_id;
@@ -288,7 +291,7 @@ static inline int cfs_policy_on_invalid(struct sOSEvent* event) {
     struct timespec start, end;
     clock_gettime(CLOCK_MONOTONIC_RAW, &start);
 
-    if (get_virtual_off_physical(event->virtual_id, event->physical_id)) {
+    if (get_virtual_off_physical(event->virtual_id, event->physical_id, false)) {
 
     }
 
@@ -393,7 +396,7 @@ static inline int cfs_policy_on_sleep_state_change(struct sOSEvent* event) {
 
             if (physical->resource->virtualResource) {
                 event->virtual_id = physical->resource->virtualResource->resource->virtualId;
-                fifo_policy_save_context(event);
+                cfs_policy_save_context(event);
             } else
                 return 0;
         }
@@ -425,15 +428,10 @@ static inline int cfs_policy_init(unsigned long numberOfResource) {
     struct timespec start, end;
     clock_gettime(CLOCK_MONOTONIC_RAW, &start);
 
-    _cfs_nb_resources = numberOfResource;
     pthread_mutex_init(&_cfs_resourceListLock, NULL);
-    pthread_mutex_init(&_cfs_virtualValidQueueLock, NULL);
-    pthread_mutex_init(&_cfs_virtualInvalidQueueLock, NULL);
-    pthread_mutex_init(&_cfs_physicalFreeListLock, NULL);
-    pthread_mutex_init(&_cfs_physicalUsedListLock, NULL);
 
-    for (unsigned long physical_id = 0; physical_id < _cfs_nb_resources; physical_id++) {
-        add_physical_resource(resourceList[physical_id]);
+    for (unsigned long physical_id = 0; physical_id < numberOfResource; physical_id++) {
+        add_physical_resource(&resourceList[physical_id]);
     }
 
     virtual_valid_queue.sorted = true;

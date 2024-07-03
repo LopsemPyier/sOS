@@ -6,6 +6,7 @@
 #define SOS_RR_POLICY_H
 
 #include "api.h"
+#include "queues.h"
 
 extern struct policy_detail rr_policy_detail;
 

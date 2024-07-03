@@ -6,6 +6,7 @@
 #define SOS_CFS_POLICY_H
 
 #include "api.h"
+#include "queues.h"
 
 extern struct policy_detail cfs_policy_detail;
 

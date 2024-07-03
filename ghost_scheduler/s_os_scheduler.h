@@ -57,6 +57,7 @@ namespace ghost {
 
         RunState run_state = RunState::kBlocked;
         Cpu cpu{Cpu::UninitializedType::kUninitialized};
+        uint64_t runtime = 0;
     };
 
     class SOSScheduler : public BasicDispatchScheduler<SOSTask> {

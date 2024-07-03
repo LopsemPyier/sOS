@@ -8,28 +8,21 @@ struct Queue virtual_on_resource_queue;
 struct Queue physical_available_list;
 struct Queue physical_used_list;
 
-void init_queues() {
-    INIT_LIST_HEAD(&(virtual_invalid_queue.lst));
-    INIT_LIST_HEAD(&(virtual_valid_queue.lst));
-    INIT_LIST_HEAD(&(virtual_on_resource_queue.lst));
 
-    pthread_mutex_init(&(virtual_invalid_queue.lock));
-    pthread_mutex_init(&(virtual_valid_queue.lock));
-    pthread_mutex_init(&(virtual_on_resource_queue.lock));
-
-    virtual_valid_queue.sorted = false;
-    virtual_invalid_queue.sorted = false;
-    virtual_on_resource_queue.sorted = false;
-
-    INIT_LIST_HEAD(&(physical_available_list.lst));
-    INIT_LIST_HEAD(&(physical_used_list.lst));
-
-    pthread_mutex_init(&(physical_available_list.lock));
-    pthread_mutex_init(&(physical_used_list.lock));
-
-    physical_available_list.sorted = false;
-    physical_used_list.sorted = false;
+void display_physical_list(struct Queue* queue) {
+    struct optEludeList* phys;
+    list_for_each_entry(phys, &queue->lst, iulist) {
+        printf("%lu ", phys->resource->physicalId);
+    }
 }
+
+void display_virtual_queue(struct Queue* queue) {
+    struct optVirtualResourceList* node;
+    list_for_each_entry(node, &queue->lst, iulist) {
+        printf("%lu ", node->resource->virtualId);
+    }
+}
+
 
 struct optEludeList * get_physical_resource(unsigned long id, struct Queue * queue) {
     struct optEludeList *res,*tmp;
@@ -37,7 +30,7 @@ struct optEludeList * get_physical_resource(unsigned long id, struct Queue * que
         if (res->resource->physicalId == id)
             break;
     }
-    if (&res->iulist == queue->lst)
+    if (&res->iulist == &queue->lst)
         return NULL;
     else
         return res;
@@ -49,7 +42,7 @@ struct optVirtualResourceList * get_virtual_resource(unsigned long id, struct Qu
         if (res->resource->virtualId == id)
             break;
     }
-    if (&res->iulist == queue->lst)
+    if (&res->iulist == &queue->lst)
         return NULL;
     else
         return res;
@@ -115,6 +108,7 @@ void insert_to_queue(struct optVirtualResourceList* item, struct Queue * queue) 
     } else {
         pthread_mutex_lock(&queue->lock);
         list_move_tail(&item->iulist, &queue->lst);
+        queue->nb++;
         pthread_mutex_unlock(&queue->lock);
     }
 }
@@ -124,22 +118,26 @@ void insert_to_queue_sorted(struct optVirtualResourceList* item, struct Queue * 
     pthread_mutex_lock(&queue->lock);
     list_for_each_entry(ptr, &queue->lst, iulist) {
         if (sortedBy == UTILIZATION && asc && ptr->resource->utilisation > item->resource->utilisation) {
-            list_move(&resource->iulist, &item->iulist);
+            list_move(&ptr->iulist, &item->iulist);
+            queue->nb++;
             pthread_mutex_unlock(&queue->lock);
             return;
         }
         else if (sortedBy == UTILIZATION && !asc && ptr->resource->utilisation < item->resource->utilisation) {
-            list_move(&resource->iulist, &item->iulist);
+            list_move(&ptr->iulist, &item->iulist);
+            queue->nb++;
             pthread_mutex_unlock(&queue->lock);
             return;
         }
         else if (sortedBy == ID && asc && ptr->resource->virtualId > item->resource->virtualId) {
-            list_move(&resource->iulist, &item->iulist);
+            list_move(&ptr->iulist, &item->iulist);
+            queue->nb++;
             pthread_mutex_unlock(&queue->lock);
             return;
         }
         else if (sortedBy == ID && !asc && ptr->resource->virtualId < item->resource->virtualId) {
-            list_move(&resource->iulist, &item->iulist);
+            list_move(&ptr->iulist, &item->iulist);
+            queue->nb++;
             pthread_mutex_unlock(&queue->lock);
             return;
         }
@@ -153,10 +151,12 @@ void physical_move_to(struct optEludeList* item, struct Queue* src, struct Queue
 
     pthread_mutex_lock(&src->lock);
     list_move_tail(&item->iulist, &tmp);
+    src->nb--;
     pthread_mutex_unlock(&src->lock);
 
     pthread_mutex_lock(&dst->lock);
     list_move_tail(&item->iulist, &dst->lst);
+    dst->nb++;
     pthread_mutex_unlock(&dst->lock);
 }
 
@@ -165,6 +165,7 @@ void virtual_move_to(struct optVirtualResourceList* item, struct Queue* src, str
 
     pthread_mutex_lock(&src->lock);
     list_move_tail(&item->iulist, &tmp);
+    src->nb--;
     pthread_mutex_unlock(&src->lock);
 
     insert_to_queue(item, dst);
@@ -185,6 +186,7 @@ struct optVirtualResourceList * add_virtual_resource(unsigned long id, unsigned 
 
     pthread_mutex_lock(&virtual_invalid_queue.lock);
     list_add_tail(&(virtualResource->iulist), &virtual_invalid_queue.lst);
+    virtual_invalid_queue.nb++;
     pthread_mutex_unlock(&virtual_invalid_queue.lock);
 
     return virtualResource;
@@ -199,6 +201,7 @@ struct optEludeList * add_physical_resource(struct resource *physical) {
 
     pthread_mutex_lock(&physical_used_list.lock);
     list_add_tail(&(physicalResource->iulist), &physical_used_list.lst);
+    physical_used_list.nb++;
     pthread_mutex_unlock(&physical_used_list.lock);
 
     return physicalResource;
@@ -211,21 +214,23 @@ void remove_virtual_resource(unsigned long id) {
         if (unlikely(!virtualResource)) {
             virtualResource = get_virtual_resource(id, &virtual_invalid_queue);
             if (unlikely(!virtualResource)) {
-                trace("TRACE: exiting fifo_policy::on_dead_thread -- error\n");
-                return 1;
+                return;
             } else {
                 pthread_mutex_lock(&virtual_invalid_queue.lock);
                 list_del(&(virtualResource->iulist));
+                virtual_invalid_queue.nb--;
                 pthread_mutex_unlock(&virtual_invalid_queue.lock);
             }
         } else {
             pthread_mutex_lock(&virtual_valid_queue.lock);
             list_del(&(virtualResource->iulist));
+            virtual_valid_queue.nb--;
             pthread_mutex_unlock(&virtual_valid_queue.lock);
         }
     } else {
         pthread_mutex_lock(&virtual_on_resource_queue.lock);
         list_del(&(virtualResource->iulist));
+        virtual_on_resource_queue.nb--;
         pthread_mutex_unlock(&virtual_on_resource_queue.lock);
     }
 
@@ -243,7 +248,7 @@ void remove_virtual_resource(unsigned long id) {
 }
 
 void remove_virtual_resources_of_proc(unsigned long proc) {
-    struct optVirtualResourceList* item, tmp;
+    struct optVirtualResourceList *item, *tmp;
     list_for_each_entry_safe(item, tmp, &virtual_on_resource_queue.lst, iulist) {
         if (item->resource->process == proc) {
             remove_virtual_resource(item->resource->virtualId);
