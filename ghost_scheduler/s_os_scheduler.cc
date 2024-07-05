@@ -60,7 +60,15 @@ namespace ghost {
         }
 
         policy->functions->init(last_index);
-
+        for (const Cpu& cpu: cpus() ) {
+            if (cpu.id() != GetGlobalCPUId()) {
+                struct sOSEvent *event = (struct sOSEvent *) malloc(sizeof(struct sOSEvent));
+                event->physical_id = cpu.id();
+                event->sleep = AVAILABLE;
+                policy->functions->on_sleep_state_change(event);
+                free(event);
+            }
+        }
         trace("TRACE: exiting ghost::scheduler::EnclaveReady\n");
     }
 
@@ -75,6 +83,14 @@ namespace ghost {
     int SOSScheduler::submitEvent(struct sOSEvent *event) {
         trace("TRACE: entering ghost::scheduler::submitEvent\n");
 
+        SOSTask* task = getTask(event->virtual_id);
+
+        if (event->event_id != task->status_word.barrier()) {
+            printf("The event id is %lu while barrier is %iu\n", event->event_id, task->status_word.barrier());
+            trace("TRACE: exiting ghost::scheduler::submitEvent -- error\n");
+            return 1;
+        }
+
         const Cpu& cpu = topology()->cpu(event->physical_id);
 
         RunRequest* req = enclave()->GetRunRequest(cpu);
@@ -85,6 +101,10 @@ namespace ghost {
                           // not checked when a global agent is scheduling a CPU other than
                           // the one that the global agent is currently running on.
                           .commit_flags = COMMIT_AT_TXN_COMMIT});
+
+        while (task->status_word.on_cpu()) {
+            Pause();
+        }
 
         /*enclave()->CommitRunRequests(found_cpu);
         req = enclave()->GetRunRequest(cpu);*/
@@ -255,6 +275,8 @@ found:
         const ghost_msg_payload_task_new* payload =
                 static_cast<const ghost_msg_payload_task_new*>(msg.payload());
 
+        addTask(payload->gtid, task);
+
         task->gtid = Gtid(payload->gtid);
 
         struct sOSEvent* event = (struct sOSEvent*) malloc(sizeof(struct sOSEvent));
@@ -263,19 +285,49 @@ found:
         event->virtual_id = task->gtid.id();
         event->event_id = msg.seqnum();
 
+        printf("Creating task %lu with event_id %lu", event->virtual_id, event->event_id);
+
         policy->functions->on_create_thread(event);
+        struct HintsPayload* hint_payload = (struct HintsPayload*) malloc(sizeof(struct HintsPayload));
+        hint_payload->type = HintsPayload::PRIORITY;
+        hint_payload->priority = payload->nice + 20; // So that min niceness is 0
+        policy->functions->on_hints(event, hint_payload);
+        free(hint_payload);
+
+        CpuList cpu_affinity = MachineTopology()->EmptyCpuList();
+        if (GhostHelper()->SchedGetAffinity(task->gtid, cpu_affinity) != 0) {
+            printf("Can't retrieve cpu_affinity\n");
+            cpu_affinity = cpus();
+        }
+
+        hint_payload = (struct HintsPayload*) malloc(sizeof(struct HintsPayload));
+        hint_payload->type = HintsPayload::PHYSICAL_AFFINITY;
+        INIT_LIST_HEAD(&hint_payload->physicals);
+
+        struct optEludeList* node;
+        for (int i = 0; i < nb_physical_resources(); i++) {
+            if (cpu_affinity.IsSet(resourceList[i].physicalId)) {
+                node = (struct optEludeList*)malloc(sizeof(struct optEludeList));
+                node->resource = &resourceList[i];
+                INIT_LIST_HEAD(&node->iulist);
+                list_add(&node->iulist, &hint_payload->physicals);
+            }
+        }
+
+        policy->functions->on_hints(event, hint_payload);
+        free(hint_payload);
 
         if (payload->runnable) {
             policy->functions->on_ready(event);
 
-            if (!policy->functions->select_phys_to_virtual(event)) {
+            /*if (!policy->functions->select_phys_to_virtual(event)) {
                 if (submitEvent(event)) {
                     policy->functions->on_yield(event);
                 } else {
                     CpuState* cs = cpu_state(topology()->cpu(event->physical_id));
                     cs->used = true;
                 }
-            }
+            }*/
         }
 
         free(event);
@@ -292,16 +344,18 @@ found:
         event->attached_process = task->gtid.id();
         event->event_id = msg.seqnum();
 
+        printf("Making task %lu runnable with event_id %lu\n", event->virtual_id, event->event_id);
+
         policy->functions->on_ready(event);
 
-        if (!policy->functions->select_phys_to_virtual(event)) {
+        /*if (!policy->functions->select_phys_to_virtual(event)) {
             if (submitEvent(event)) {
                 policy->functions->on_yield(event);
             } else {
                 CpuState* cs = cpu_state(topology()->cpu(event->physical_id));
                 cs->used = true;
             }
-        }
+        }*/
 
         free(event);
 
@@ -314,11 +368,12 @@ found:
         const ghost_msg_payload_task_dead* payload =
                 static_cast<const ghost_msg_payload_task_dead*>(msg.payload());
 
+        removeTask(payload->gtid);
+
         struct sOSEvent* event = (struct sOSEvent*) malloc(sizeof(struct sOSEvent));
 
-        event->virtual_id = task->gtid.id();
-        if (task->oncpu())
-            event->physical_id = task->cpu.id();
+        event->virtual_id = payload->gtid;
+        event->physical_id = payload->cpu;
 
         event->event_id = msg.seqnum();
 
@@ -340,9 +395,8 @@ found:
 
         struct sOSEvent* event = (struct sOSEvent*) malloc(sizeof(struct sOSEvent));
 
-        event->virtual_id = task->gtid.id();
-        if (task->oncpu())
-            event->physical_id = task->cpu.id();
+        event->virtual_id = payload->gtid;
+        event->physical_id = payload->cpu;
         event->event_id = msg.seqnum();
 
         policy->functions->on_dead_thread(event);
@@ -364,11 +418,13 @@ found:
         struct sOSEvent* event = (struct sOSEvent*) malloc(sizeof(struct sOSEvent));
 
         event->virtual_id = payload->gtid;
-        if (task->oncpu())
-            event->physical_id = payload->cpu;
+        event->physical_id = payload->cpu;
         event->event_id = msg.seqnum();
 
+        printf("Making task %lu yield with event_id %lu\n", event->virtual_id, event->event_id);
+
         uint64_t runtime = task->status_word.runtime() - task->runtime;
+        printf("Task %lu runtime %lu while already on runtime %lu\n", task->gtid.id(), task->status_word.runtime(), task->runtime);
         task->runtime = task->status_word.runtime();
 
         event->utilization = runtime;
@@ -392,11 +448,13 @@ found:
         struct sOSEvent* event = (struct sOSEvent*) malloc(sizeof(struct sOSEvent));
 
         event->virtual_id = payload->gtid;
-        if (task->oncpu())
-            event->physical_id = payload->cpu;
+        event->physical_id = payload->cpu;
         event->event_id = msg.seqnum();
 
+        printf("Making task %lu blocked with event_id %lu\n", event->virtual_id, event->event_id);
+
         uint64_t runtime = task->status_word.runtime() - task->runtime;
+        printf("Task %lu runtime %lu while already on runtime %lu\n", task->gtid.id(), task->status_word.runtime(), task->runtime);
         task->runtime = task->status_word.runtime();
 
         event->utilization = runtime;
@@ -419,9 +477,16 @@ found:
         struct sOSEvent* event = (struct sOSEvent*) malloc(sizeof(struct sOSEvent));
 
         event->virtual_id = payload->gtid;
-        if (task->oncpu())
-            event->physical_id = payload->cpu;
+        event->physical_id = payload->cpu;
         event->event_id = msg.seqnum();
+
+        printf("Making task %lu preempted with event_id %lu\n", event->virtual_id, event->event_id);
+
+        uint64_t runtime = task->status_word.runtime() - task->runtime;
+        printf("Task %lu runtime %lu while already on runtime %lu\n", task->gtid.id(), task->status_word.runtime(), task->runtime);
+        task->runtime = task->status_word.runtime();
+
+        event->utilization = runtime;
 
         policy->functions->on_yield(event);
 
@@ -447,10 +512,34 @@ found:
 
     void SOSScheduler::TaskAffinityChanged(ghost::SOSTask *task, const ghost::Message &msg) {
         trace("TRACE: entering ghost::scheduler::TaskAffinityChanged\n");
+        const ghost_msg_payload_task_affinity_changed* payload =
+                static_cast<const ghost_msg_payload_task_affinity_changed*>(msg.payload());
+
+        CpuList cpu_affinity = MachineTopology()->EmptyCpuList();
+        if (GhostHelper()->SchedGetAffinity(task->gtid, cpu_affinity) != 0) {
+            printf("Can't retrieve cpu_affinity\n");
+            cpu_affinity = cpus();
+        }
 
         struct sOSEvent* event = (struct sOSEvent*) malloc(sizeof(struct sOSEvent));
 
-        policy->functions->on_hints(event);
+        struct HintsPayload* hint_payload = (struct HintsPayload*) malloc(sizeof(struct HintsPayload));
+        hint_payload->type = HintsPayload::PHYSICAL_AFFINITY;
+        INIT_LIST_HEAD(&hint_payload->physicals);
+
+        struct optEludeList* node;
+        for (int i = 0; i < nb_physical_resources(); i++) {
+            if (cpu_affinity.IsSet(resourceList[i].physicalId)) {
+                node = (struct optEludeList*)malloc(sizeof(struct optEludeList));
+                node->resource = &resourceList[i];
+                INIT_LIST_HEAD(&node->iulist);
+                list_add(&node->iulist, &hint_payload->physicals);
+            }
+        }
+
+
+        policy->functions->on_hints(event, hint_payload);
+        free(hint_payload);
 
         free(event);
 
@@ -459,10 +548,19 @@ found:
 
     void SOSScheduler::TaskPriorityChanged(ghost::SOSTask *task, const ghost::Message &msg) {
         trace("TRACE: entering ghost::scheduler::TaskPriorityChanged\n");
+        const ghost_msg_payload_task_priority_changed* payload =
+                static_cast<const ghost_msg_payload_task_priority_changed*>(msg.payload());
 
         struct sOSEvent* event = (struct sOSEvent*) malloc(sizeof(struct sOSEvent));
 
-        policy->functions->on_hints(event);
+        event->event_id = msg.seqnum();
+        event->virtual_id = payload->gtid;
+
+        struct HintsPayload* hint_payload = (struct HintsPayload*) malloc(sizeof(struct HintsPayload));
+        hint_payload->type = HintsPayload::PRIORITY;
+        hint_payload->priority = payload->nice + 20; // So that min niceness is 0
+        policy->functions->on_hints(event, hint_payload);
+        free(hint_payload);
 
         free(event);
 
@@ -553,16 +651,12 @@ found:
 
     void SOSScheduler::GlobalSchedule(const StatusWord &agent_sw, BarrierToken agent_sw_last) {
         // trace("TRACE: entering ghost::scheduler::GlobalSchedule\n");
-        printf("Getting Global CPU ID\n");
         const int global_cpu_id = GetGlobalCPUId();
         bool sched = false;
 
-        printf("For each CPU\n");
         for (const Cpu& cpu : cpus()) {
-            printf("Getting CPU State\n");
             CpuState* cs = cpu_state(cpu);
 
-            printf("IsAvailable\n");
             if (!Available(cpu)) {
                 continue;
             }
@@ -572,14 +666,11 @@ found:
                 continue;
             }
 
-            printf("Malloc Event\n");
             struct sOSEvent* event = (struct sOSEvent*) malloc(sizeof(struct sOSEvent));
 
-            printf("Settings values\n");
             event->physical_id = cpu.id();
             event->event_id = agent_sw_last;
 
-            printf("Select Virtual to load\n");
             if(!policy->functions->select_virtual_to_load(event)) {
                 printf("The global_cpu_id is %d while cpu id is %d\n", global_cpu_id, cpu.id());
                 if (SOSScheduler::submitEvent(event)) {
@@ -590,7 +681,6 @@ found:
                 sched = true;
             }
 
-            printf("Free event\n");
             free(event);
         }
 

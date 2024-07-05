@@ -67,6 +67,7 @@ void display_virtual_list(struct Queue* queue);
 
 static void init_queues() {
     trace("TRACE: entering init_queues\n");
+
     INIT_LIST_HEAD(&(virtual_invalid_queue.lst));
     INIT_LIST_HEAD(&(virtual_valid_queue.lst));
     INIT_LIST_HEAD(&(virtual_on_resource_queue.lst));

@@ -66,6 +66,17 @@ struct sOSEvent {
     unsigned long utilization;
 };
 
+struct HintsPayload {
+    enum HintsType {
+        PRIORITY,
+        PHYSICAL_AFFINITY
+    } type;
+    union {
+        unsigned long priority;
+        struct list_head physicals;
+    };
+};
+
 struct policy_function {
     int (*init)(unsigned long numberOfResources);
     int (*select_phys_to_virtual)(struct sOSEvent *event);
@@ -77,7 +88,7 @@ struct policy_function {
     int (*on_yield)(struct sOSEvent *event);
     int (*on_ready)(struct sOSEvent *event);
     int (*on_invalid)(struct sOSEvent *event);
-    int (*on_hints)(struct sOSEvent *event);
+    int (*on_hints)(struct sOSEvent *event, struct HintsPayload *payload);
     int (*on_protection_violation)(struct sOSEvent *event);
     int (*on_create_thread)(struct sOSEvent *event);
     int (*on_dead_thread)(struct sOSEvent *event);
@@ -125,6 +136,7 @@ struct virtual_resource {
     int process;
     unsigned long utilisation;
     unsigned int priority;
+    struct list_head physical_affinity;
     struct timespec last_start;
     unsigned long last_event_id;
 };

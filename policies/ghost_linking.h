@@ -8,6 +8,8 @@
 #include "api.h"
 #include "policies.h"
 
+extern struct policy_detail* ghost_policy;
+
 void initResources(unsigned long resourceSize);
 void add_cpu(unsigned long id);
 

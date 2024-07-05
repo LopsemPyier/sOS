@@ -13,6 +13,7 @@
 #include "lib/agent.h"
 #include "lib/scheduler.h"
 #include "policies/ghost_linking.h"
+#include "absl/container/flat_hash_map.h"
 
 namespace ghost {
 
@@ -115,7 +116,19 @@ namespace ghost {
         static const int kDebugRunqueue = 1;
 
     private:
-        struct policy_detail* policy = &rr_policy_detail;
+        SOSTask* getTask(unsigned long id) {
+            return tasks[id];
+        }
+
+        void addTask(unsigned long id, SOSTask* task) {
+            tasks[id] = task;
+        }
+
+        void removeTask(unsigned long id) {
+            tasks.erase(id);
+        }
+
+        struct policy_detail* policy = ghost_policy;
 
         struct CpuState {
             SOSTask * current = nullptr;
@@ -137,6 +150,7 @@ namespace ghost {
 
 
         uint64_t iterations_ = 0;
+        absl::flat_hash_map<unsigned long, SOSTask*> tasks;
     };
 
     std::unique_ptr<SOSScheduler> SingleThreadSOSScheduler(

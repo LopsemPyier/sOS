@@ -20,16 +20,35 @@ void display_virtual_queue(struct Queue* queue) {
     struct optVirtualResourceList* node;
     list_for_each_entry(node, &queue->lst, iulist) {
         printf("%lu ", node->resource->virtualId);
+        if (queue->sorted) {
+            if (queue->sortedBy == UTILIZATION)
+                printf("(%lu) ", node->resource->utilisation);
+        }
     }
 }
 
 
 struct optEludeList * get_physical_resource(unsigned long id, struct Queue * queue) {
+    printf("Get physical resource\n");
+    printf("Available list : ");
+    display_physical_list(&physical_available_list);
+    printf("\n");
+    printf("Used list : ");
+    display_physical_list(&physical_used_list);
+    printf("\n");
+
+    if (list_empty(&queue->lst)) {
+        printf("Empty list anyways\n");
+        return NULL;
+    }
     struct optEludeList *res,*tmp;
     list_for_each_entry_safe(res, tmp, &queue->lst, iulist) {
-        if (res->resource->physicalId == id)
+        printf("For res %lu\n", res->resource->physicalId);
+        if (res->resource->physicalId == id) {
             break;
+        }
     }
+    printf("Exiting with value %p\n", res);
     if (&res->iulist == &queue->lst)
         return NULL;
     else
@@ -37,11 +56,28 @@ struct optEludeList * get_physical_resource(unsigned long id, struct Queue * que
 }
 
 struct optVirtualResourceList * get_virtual_resource(unsigned long id, struct Queue * queue) {
+    printf("Get virtual resource\n");
+    printf("On Resource queue : ");
+    display_virtual_queue(&virtual_on_resource_queue);
+    printf("\n");
+    printf("Valid queue : ");
+    display_virtual_queue(&virtual_valid_queue);
+    printf("\n");
+    printf("Invalid queue : ");
+    display_virtual_queue(&virtual_invalid_queue);
+    printf("\n");
+
+    if (list_empty(&queue->lst)) {
+        printf("Empty list anyways\n");
+        return NULL;
+    }
     struct optVirtualResourceList *res,*tmp;
     list_for_each_entry_safe(res, tmp, &queue->lst, iulist) {
+        printf("For res %lu\n", res->resource->virtualId);
         if (res->resource->virtualId == id)
             break;
     }
+    printf("Exiting with value %p\n", res);
     if (&res->iulist == &queue->lst)
         return NULL;
     else
@@ -50,21 +86,30 @@ struct optVirtualResourceList * get_virtual_resource(unsigned long id, struct Qu
 }
 
 int put_virtual_on_physical(unsigned long virtual_id, unsigned long physical_id) {
+    printf("Put virtual on physical\n");
     struct optVirtualResourceList* virtual = get_virtual_resource(virtual_id, &virtual_valid_queue);
 
-    if (!virtual)
+    if (!virtual) {
+        printf("No virtual\n");
         return 1;
+    }
 
     struct optEludeList* physical = get_physical_resource(physical_id, &physical_available_list);
 
-    if (!physical)
+    if (!physical) {
+        printf("No physical\n");
         return 1;
+    }
 
-    if (physical->resource->virtualResource)
+    if (physical->resource->virtualResource) {
+        printf("Physical still has virtual\n");
         return 1;
+    }
 
+    printf("Moving physical\n");
     physical_move_to(physical, &physical_available_list, &physical_used_list);
-    virtual_move_to(virtual, &virtual_valid_queue, &virtual_invalid_queue);
+    printf("Moving virtual\n");
+    virtual_move_to(virtual, &virtual_valid_queue, &virtual_on_resource_queue);
 
     virtual->resource->physical_resource = physical;
     physical->resource->virtualResource = virtual;
@@ -74,19 +119,27 @@ int put_virtual_on_physical(unsigned long virtual_id, unsigned long physical_id)
 
 
 int get_virtual_off_physical(unsigned long virtual_id, unsigned long physical_id, bool valid) {
-
+    printf("Get virtual off physical\n");
     struct optVirtualResourceList* virtual = get_virtual_resource(virtual_id, &virtual_on_resource_queue);
 
-    if (!virtual)
+    if (!virtual) {
+        printf("No virtual\n");
         return 1;
+    }
 
     struct optEludeList* physical = get_physical_resource(physical_id, &physical_used_list);
 
-    if (!physical)
+    if (!physical) {
+        printf("No physical\n");
         return 1;
+    }
 
-    if (!physical->resource->virtualResource || physical->resource->virtualResource != virtual)
+    printf("Virtual %p is supposed to be the same as physical->virtual %p\n", virtual, physical->resource->virtualResource);
+
+    /*if (!physical->resource->virtualResource || physical->resource->virtualResource != virtual) {
+        printf("No virtual or wrong one\n");
         return 1;
+    }*/
 
 
     physical_move_to(physical, &physical_used_list, &physical_available_list);
@@ -118,30 +171,32 @@ void insert_to_queue_sorted(struct optVirtualResourceList* item, struct Queue * 
     pthread_mutex_lock(&queue->lock);
     list_for_each_entry(ptr, &queue->lst, iulist) {
         if (sortedBy == UTILIZATION && asc && ptr->resource->utilisation > item->resource->utilisation) {
-            list_move(&ptr->iulist, &item->iulist);
+            list_move(&item->iulist, &ptr->iulist);
             queue->nb++;
             pthread_mutex_unlock(&queue->lock);
             return;
         }
         else if (sortedBy == UTILIZATION && !asc && ptr->resource->utilisation < item->resource->utilisation) {
-            list_move(&ptr->iulist, &item->iulist);
+            list_move(&item->iulist, &ptr->iulist);
             queue->nb++;
             pthread_mutex_unlock(&queue->lock);
             return;
         }
-        else if (sortedBy == ID && asc && ptr->resource->virtualId > item->resource->virtualId) {
-            list_move(&ptr->iulist, &item->iulist);
+        else if (sortedBy == ID && asc && ptr->resource->virtualId < item->resource->virtualId) {
+            list_move(&item->iulist, &ptr->iulist);
             queue->nb++;
             pthread_mutex_unlock(&queue->lock);
             return;
         }
-        else if (sortedBy == ID && !asc && ptr->resource->virtualId < item->resource->virtualId) {
-            list_move(&ptr->iulist, &item->iulist);
+        else if (sortedBy == ID && !asc && ptr->resource->virtualId > item->resource->virtualId) {
+            list_move(&item->iulist, &ptr->iulist);
             queue->nb++;
             pthread_mutex_unlock(&queue->lock);
             return;
         }
     }
+    list_move(&item->iulist, queue->lst.prev);
+    queue->nb++;
     pthread_mutex_unlock(&queue->lock);
 }
 
@@ -183,6 +238,8 @@ struct optVirtualResourceList * add_virtual_resource(unsigned long id, unsigned 
     virtualResource->resource->last_event_id = 0;
     virtualResource->resource->process = proc;
     virtualResource->resource->utilisation = 0;
+    virtualResource->resource->priority = 0;
+    INIT_LIST_HEAD(&virtualResource->resource->physical_affinity);
 
     pthread_mutex_lock(&virtual_invalid_queue.lock);
     list_add_tail(&(virtualResource->iulist), &virtual_invalid_queue.lst);
@@ -273,7 +330,7 @@ struct optEludeList* get_first_physical_available() {
         return NULL;
 }
 bool some_physical_available() {
-    return list_empty(&physical_available_list.lst);
+    return !list_empty(&physical_available_list.lst);
 }
 struct optVirtualResourceList* get_first_virtual_valid() {
     if (some_virtual_valid())
@@ -282,7 +339,7 @@ struct optVirtualResourceList* get_first_virtual_valid() {
         return NULL;
 }
 bool some_virtual_valid() {
-    return list_empty(&virtual_valid_queue.lst);
+    return !list_empty(&virtual_valid_queue.lst);
 }
 bool is_physical_available_by_id(unsigned long id) {
     struct optEludeList* physical = get_physical_resource(id, &physical_available_list);

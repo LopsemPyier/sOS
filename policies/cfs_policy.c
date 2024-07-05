@@ -3,6 +3,9 @@
 //
 
 #include "cfs_policy.h"
+#ifndef max
+#define max(a, b) ((a > b) ? a : b)
+#endif
 
 pthread_mutex_t _cfs_resourceListLock;
 
@@ -40,18 +43,18 @@ static unsigned long min_granularity = 1000; // ns
 static unsigned long latency = 10000; // ns
 
 static inline int cfs_policy_select_phys_to_virtual(struct sOSEvent *event);
-static inline int cfs_policy_select_virtual_to_evict(struct sOSEvent *event); // TODO:
+static inline int cfs_policy_select_virtual_to_evict(struct sOSEvent *event);
 static inline int cfs_policy_select_virtual_to_load(struct sOSEvent *event);
-static inline int cfs_policy_save_context(struct sOSEvent *event); // TODO:
-static inline int cfs_policy_restore_context(struct sOSEvent *event); // TODO:
+static inline int cfs_policy_save_context(struct sOSEvent *event);
+static inline int cfs_policy_restore_context(struct sOSEvent *event);
 static inline int cfs_policy_on_yield(struct sOSEvent *event);
 static inline int cfs_policy_on_ready(struct sOSEvent *event);
 static inline int cfs_policy_on_invalid(struct sOSEvent *event);
-static inline int cfs_policy_on_hints(struct sOSEvent *event); // TODO:
+static inline int cfs_policy_on_hints(struct sOSEvent *event, struct HintsPayload *payload); // TODO:
 static inline int cfs_policy_on_protection_violation(struct sOSEvent *event); // TODO:
 static inline int cfs_policy_on_create_thread(struct sOSEvent *event);
 static inline int cfs_policy_on_dead_thread(struct sOSEvent *event);
-static inline int cfs_policy_on_sleep_state_change(struct sOSEvent *event); // TODO:
+static inline int cfs_policy_on_sleep_state_change(struct sOSEvent *event);
 static inline int cfs_policy_on_signal(struct sOSEvent *event); // TODO:
 static inline int cfs_policy_init(unsigned long numberOfResource);
 static inline void cfs_policy_exit();
@@ -171,7 +174,10 @@ static inline int cfs_policy_select_virtual_to_load(struct sOSEvent* event) {
 //        trace("TRACE: exiting fifo_policy::select_virtual_to_load -- already in use\n");
         return 1;
     } else if (physicalResource->resource->virtualResource) {
-        get_virtual_off_physical(physicalResource->resource->virtualResource->resource->virtualId, physicalResource->resource->physicalId, true);
+        physicalResource->resource->virtualResource->resource->physical_resource = NULL;
+        physicalResource->resource->virtualResource = NULL;
+        physical_move_to(physicalResource, &physical_used_list, &physical_available_list);
+        // get_virtual_off_physical(physicalResource->resource->virtualResource->resource->virtualId, physicalResource->resource->physicalId, true);
     }
 
     struct optVirtualResourceList* virtualResource = get_first_virtual_valid();
@@ -238,20 +244,21 @@ static inline int cfs_policy_on_yield(struct sOSEvent *event) {
     struct timespec start, end;
     clock_gettime(CLOCK_MONOTONIC_RAW, &start);
 
-
+    struct optVirtualResourceList* virtualResource;
     if (get_virtual_off_physical(event->virtual_id, event->physical_id, true)) {
-        printf("Error: virtual %lu not found or physical %lu not found.\n", event->virtual_id, event->physical_id);
-        trace("TRACE: exiting cfs_policy::on_yield -- error\n");
-        return 1;
+        virtualResource = get_virtual_resource(event->virtual_id, &virtual_on_resource_queue);
+        if (virtualResource)
+            virtual_move_to(virtualResource, &virtual_on_resource_queue, &virtual_valid_queue);
     }
 
-    struct optVirtualResourceList* virtualResource = get_virtual_resource(event->virtual_id, &virtual_valid_queue);
+    virtualResource = get_virtual_resource(event->virtual_id, &virtual_valid_queue);
     if (!virtualResource) {
         trace("TRACE: exiting cfs_policy::on_yield -- error virtual not found\n");
         return 1;
     }
 
     virtualResource->resource->last_event_id = event->event_id;
+    printf("Resource utilisation %lu\n", event->utilization);
     virtualResource->resource->utilisation += (event->utilization * inverted_weights[virtualResource->resource->priority]) >> 22;
 
 
@@ -273,6 +280,11 @@ static inline int cfs_policy_on_ready(struct sOSEvent* event) {
         return 1;
     }
 
+    struct optVirtualResourceList* smallest_vruntime = get_first_virtual_valid();
+    if (smallest_vruntime) {
+        virtualResource->resource->utilisation = max(smallest_vruntime->resource->utilisation, virtualResource->resource->utilisation);
+    }
+
     virtualResource->resource->last_event_id = event->event_id;
     virtualResource->resource->physical_resource = NULL;
 
@@ -291,20 +303,31 @@ static inline int cfs_policy_on_invalid(struct sOSEvent* event) {
     struct timespec start, end;
     clock_gettime(CLOCK_MONOTONIC_RAW, &start);
 
+    struct optVirtualResourceList* virtualResource;
     if (get_virtual_off_physical(event->virtual_id, event->physical_id, false)) {
-
+        virtualResource = get_virtual_resource(event->virtual_id, &virtual_on_resource_queue);
+        if (!virtualResource)
+            virtualResource = get_virtual_resource(event->virtual_id, &virtual_valid_queue);
+        if (virtualResource)
+            virtual_move_to(virtualResource, &virtual_on_resource_queue, &virtual_invalid_queue);
+        else {
+            trace("TRACE: exiting cfs_policy::on_invalid -- error virtual not found\n");
+            return 1;
+        }
     }
+    else
+        virtualResource = get_virtual_resource(event->virtual_id, &virtual_invalid_queue);
 
-    struct optVirtualResourceList* virtualResource = get_virtual_resource(event->virtual_id, &virtual_valid_queue);
     if (!virtualResource) {
-        trace("TRACE: exiting cfs_policy::on_ready -- error\n");
+        trace("TRACE: exiting cfs_policy::on_invalid -- error\n");
         return 1;
     }
 
     virtualResource->resource->last_event_id = event->event_id;
+    printf("Resource priority %u\n", virtualResource->resource->priority);
     virtualResource->resource->utilisation += (event->utilization * inverted_weights[virtualResource->resource->priority]) >> 22;
 
-    virtual_move_to(virtualResource, &virtual_valid_queue, &virtual_invalid_queue);
+    // virtual_move_to(virtualResource, &virtual_valid_queue, &virtual_invalid_queue);
 
     clock_gettime(CLOCK_MONOTONIC_RAW, &end);
     add_event(event, ON_INVALID, start, end);
@@ -312,11 +335,42 @@ static inline int cfs_policy_on_invalid(struct sOSEvent* event) {
     return 0;
 }
 
-static inline int cfs_policy_on_hints(struct sOSEvent* event) {
+static inline int cfs_policy_on_hints(struct sOSEvent* event, struct HintsPayload* payload) {
     trace("TRACE: entering cfs_policy::on_hints\n");
 
     struct timespec start, end;
     clock_gettime(CLOCK_MONOTONIC_RAW, &start);
+    struct optVirtualResourceList* virtual;
+    switch (payload->type) {
+        case PHYSICAL_AFFINITY:
+            virtual = get_virtual_resource(event->virtual_id, &virtual_invalid_queue);
+            if (!virtual) {
+                virtual = get_virtual_resource(event->virtual_id, &virtual_valid_queue);
+                if (!virtual) {
+                    virtual = get_virtual_resource(event->virtual_id, &virtual_on_resource_queue);
+                    if (!virtual)
+                        return 1;
+                }
+            }
+            struct list_head* ptr;
+            list_for_each(ptr, &payload->physicals) {
+                list_move(ptr, &virtual->resource->physical_affinity);
+            }
+            break;
+
+        case PRIORITY:
+            virtual = get_virtual_resource(event->virtual_id, &virtual_invalid_queue);
+            if (!virtual) {
+                virtual = get_virtual_resource(event->virtual_id, &virtual_valid_queue);
+                if (!virtual) {
+                    virtual = get_virtual_resource(event->virtual_id, &virtual_on_resource_queue);
+                    if (!virtual)
+                        return 1;
+                }
+            }
+            virtual->resource->priority = payload->priority;
+            break;
+    }
 
     clock_gettime(CLOCK_MONOTONIC_RAW, &end);
     add_event(event, ON_HINTS, start, end);
@@ -344,6 +398,7 @@ static inline int cfs_policy_on_create_thread(struct sOSEvent* event) {
     struct optVirtualResourceList* virtualResource = add_virtual_resource(event->virtual_id, event->attached_process);
 
     virtualResource->resource->last_event_id = event->event_id;
+    virtualResource->resource->priority = 0;
 
     clock_gettime(CLOCK_MONOTONIC_RAW, &end);
     add_event(event, ON_CREATE_THREAD, start, end);

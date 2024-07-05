@@ -19,7 +19,7 @@ static inline int fifo_policy_restore_context(struct sOSEvent *event); // TODO:
 static inline int fifo_policy_on_yield(struct sOSEvent *event);
 static inline int fifo_policy_on_ready(struct sOSEvent *event);
 static inline int fifo_policy_on_invalid(struct sOSEvent *event);
-static inline int fifo_policy_on_hints(struct sOSEvent *event); // TODO:
+static inline int fifo_policy_on_hints(struct sOSEvent *event, struct HintsPayload* payload); // TODO:
 static inline int fifo_policy_on_protection_violation(struct sOSEvent *event); // TODO:
 static inline int fifo_policy_on_create_thread(struct sOSEvent *event);
 static inline int fifo_policy_on_dead_thread(struct sOSEvent *event);
@@ -108,7 +108,7 @@ static inline int fifo_policy_select_virtual_to_load(struct sOSEvent* event) {
     struct optEludeList * physicalResource = get_physical_resource( event->physical_id, &physical_available_list);
 
     if (!physicalResource) {
-        printf("Error: physical %lu not found", event->physical_id);
+        printf("Error: physical %lu not found\n", event->physical_id);
         trace("TRACE: exiting fifo_policy::select_virtual_to_load -- error\n");
         return 1;
     }
@@ -181,14 +181,13 @@ static inline int fifo_policy_on_yield(struct sOSEvent *event) {
 
     struct timespec start, end;
     clock_gettime(CLOCK_MONOTONIC_RAW, &start);
-
+    struct optVirtualResourceList* virtualResource;
     if (get_virtual_off_physical(event->virtual_id, event->physical_id, true)) {
-        printf("Error: virtual %lu not found or physical %lu not found.\n", event->virtual_id, event->physical_id);
-        trace("TRACE: exiting fifo_policy::on_yield -- error\n");
-        return 1;
-    }
 
-    struct optVirtualResourceList* virtualResource = get_virtual_resource(event->virtual_id, &virtual_valid_queue);
+    }
+    virtualResource = get_virtual_resource(event->virtual_id, &virtual_valid_queue);
+
+
     if (!virtualResource) {
         trace("TRACE: exiting fifo_policy::on_yield -- error virtual not found\n");
         return 1;
@@ -252,7 +251,7 @@ static inline int fifo_policy_on_invalid(struct sOSEvent* event) {
     return 0;
 }
 
-static inline int fifo_policy_on_hints(struct sOSEvent* event) {
+static inline int fifo_policy_on_hints(struct sOSEvent* event, struct HintsPayload *payload) {
     trace("TRACE: entering fifo_policy::on_hints\n");
 
     struct timespec start, end;

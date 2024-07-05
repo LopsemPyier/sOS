@@ -1,5 +1,8 @@
 #include "./policy_1.h"
+#ifndef max
 #define max(a, b) ((a > b) ? a : b)
+#endif
+
 
 LIST_HEAD(freeList);
 LIST_HEAD(usedList);

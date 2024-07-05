@@ -20,7 +20,7 @@ static inline int rr_policy_restore_context(struct sOSEvent *event); // TODO:
 static inline int rr_policy_on_yield(struct sOSEvent *event);
 static inline int rr_policy_on_ready(struct sOSEvent *event);
 static inline int rr_policy_on_invalid(struct sOSEvent *event);
-static inline int rr_policy_on_hints(struct sOSEvent *event); // TODO:
+static inline int rr_policy_on_hints(struct sOSEvent *event, struct HintsPayload *payload); // TODO:
 static inline int rr_policy_on_protection_violation(struct sOSEvent *event); // TODO:
 static inline int rr_policy_on_create_thread(struct sOSEvent *event);
 static inline int rr_policy_on_dead_thread(struct sOSEvent *event);
@@ -91,6 +91,7 @@ static inline int rr_policy_select_phys_to_virtual(struct sOSEvent *event) {
 }
 
 static bool is_evict_able(struct optVirtualResourceList* virtual, struct timespec time) {
+    printf("Is evictable virutal %p \n", virtual);
     return (time.tv_sec - virtual->resource->last_start.tv_sec) * 1000000
         + time.tv_nsec - virtual->resource->last_start.tv_nsec > preemption_time;
 }
@@ -126,6 +127,7 @@ static inline int rr_policy_select_virtual_to_load(struct sOSEvent* event) {
 
     struct optEludeList * physicalResource = get_physical_resource( event->physical_id, &physical_available_list);
 
+    printf("Physical is %p\n", physicalResource);
     if (!physicalResource) {
         physicalResource = get_physical_resource(event->physical_id, &physical_used_list);
         if (!physicalResource) {
@@ -138,18 +140,23 @@ static inline int rr_policy_select_virtual_to_load(struct sOSEvent* event) {
     if (physicalResource->resource->virtualResource && !is_evict_able(physicalResource->resource->virtualResource, start)) {
 //        trace("TRACE: exiting fifo_policy::select_virtual_to_load -- already in use\n");
         return 1;
-    } else if (physicalResource->resource->virtualResource) {
-        get_virtual_off_physical(physicalResource->resource->virtualResource->resource->virtualId, physicalResource->resource->physicalId, true);
     }
 
     struct optVirtualResourceList* virtualResource = get_first_virtual_valid();
+
+    printf("Virtual is %p\n", virtualResource);
 
     if (!virtualResource) {
         // trace("TRACE: exiting fifo_policy::select_virtual_to_load -- empty\n");
         return 1;
     }
 
-    put_virtual_on_physical(virtualResource->resource->virtualId, physicalResource->resource->physicalId);
+    printf("Resource is %p with id %lu\n", virtualResource->resource, virtualResource->resource->virtualId);
+
+
+    if (put_virtual_on_physical(virtualResource->resource->virtualId, physicalResource->resource->physicalId)) {
+        printf("Unable to find resources virtual %lu and physical %lu\n", virtualResource->resource->virtualId, physicalResource->resource->physicalId);
+    }
 
     event->virtual_id = virtualResource->resource->virtualId;
     event->event_id = virtualResource->resource->last_event_id;
@@ -203,15 +210,14 @@ static inline int rr_policy_restore_context(struct sOSEvent* event) {
 
 static inline int rr_policy_on_yield(struct sOSEvent *event) {
     trace("TRACE: entering rr_policy::on_yield\n");
-printf("virtual %lu\n", event->virtual_id);
+    printf("virtual %lu physical %lu\n", event->virtual_id, event->physical_id);
+
 
     struct timespec start, end;
     clock_gettime(CLOCK_MONOTONIC_RAW, &start);
 
     if (get_virtual_off_physical(event->virtual_id, event->physical_id, true)) {
-        printf("Error: virtual %lu not found or physical %lu not found.\n", event->virtual_id, event->physical_id);
-        trace("TRACE: exiting rr_policy::on_yield -- error\n");
-        return 1;
+
     }
 
     struct optVirtualResourceList* virtualResource = get_virtual_resource(event->virtual_id, &virtual_valid_queue);
@@ -258,24 +264,28 @@ printf("virtual %lu\n", event->virtual_id);
 
 static inline int rr_policy_on_invalid(struct sOSEvent* event) {
     trace("TRACE: entering rr_policy::on_invalid\n");
-    printf("virtual %lu\n", event->virtual_id);
+    printf("virtual %lu physical %lu\n", event->virtual_id, event->physical_id);
 
     struct timespec start, end;
     clock_gettime(CLOCK_MONOTONIC_RAW, &start);
-
+    struct optVirtualResourceList* virtualResource;
     if (get_virtual_off_physical(event->virtual_id, event->physical_id, false)) {
+        virtualResource = get_virtual_resource(event->virtual_id, &virtual_valid_queue);
+        if (!virtualResource) {
+            trace("TRACE: exiting rr_policy::on_invalid -- error can't find \n");
+            return 1;
+        }
 
-    }
-
-    struct optVirtualResourceList* virtualResource = get_virtual_resource(event->virtual_id, &virtual_valid_queue);
-    if (!virtualResource) {
-        trace("TRACE: exiting rr_policy::on_ready -- error\n");
-        return 1;
+        virtual_move_to(virtualResource, &virtual_valid_queue, &virtual_invalid_queue);
+    } else {
+        virtualResource = get_virtual_resource(event->virtual_id, &virtual_invalid_queue);
+        if (!virtualResource) {
+            trace("TRACE: exiting rr_policy::on_invalid -- error\n");
+            return 1;
+        }
     }
 
     virtualResource->resource->last_event_id = event->event_id;
-
-    virtual_move_to(virtualResource, &virtual_valid_queue, &virtual_invalid_queue);
 
     clock_gettime(CLOCK_MONOTONIC_RAW, &end);
     add_event(event, ON_INVALID, start, end);
@@ -283,7 +293,7 @@ static inline int rr_policy_on_invalid(struct sOSEvent* event) {
     return 0;
 }
 
-static inline int rr_policy_on_hints(struct sOSEvent* event) {
+static inline int rr_policy_on_hints(struct sOSEvent* event, struct HintsPayload *payload) {
     trace("TRACE: entering rr_policy::on_hints\n");
 
     struct timespec start, end;
