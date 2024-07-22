@@ -61,7 +61,7 @@ int s_os_write_page_to_swap(struct to_swap* node ) {
     }
     if (unlikely(fwrite((void*)(node->page->data),SYS_PAGE_SIZE,1,(FILE *)node->swapDevice->backend)!=1)) {
         if(usm_set_pfn(node->proc,node->swapped_address,node->page->physicalAddress, 0))
-            getchar();
+            //getchar();
         // restore_used_page(&((struct optEludeList *)(victimNode->page->usedListPositionPointer))->iulist);
         return 1;
     }
@@ -189,7 +189,6 @@ static inline int usm_free_impl(struct usm_event* usmEvent, struct policy_functi
 
     event->attached_process = usmEvent->origin;
     event->virtual_id = usmEvent->vaddr;
-    event->virtual_nb = usmEvent->length;
 
     if (policy->on_yield(event)) {
         trace("TRACE: exiting sOS::API::usm_swap_impl -- error\n");
@@ -219,8 +218,16 @@ void check_swap_out_impl(struct usm_event* usmEvent) {
     struct resource resource;
     struct to_swap* node = (struct to_swap *) malloc(sizeof(struct to_swap));
 
-    for (unsigned long i = 0; i < nb_resources; i++) {
+    for (unsigned long i = 0; i < nb_physical_resources(); i++) {
         resource = resourceList[i];
+
+        printf("Physical available %lu while %lu physical resources\n",physical_available_list.nb, nb_physical_resources());
+        if (physical_available_list.nb * 100 > nb_physical_resources()){
+            free(event);
+            free(node);
+            trace("TRACE: exiting sOS::API::check_swap_out -- no need to continue\n");
+            return;
+        }
 
         if (!resource.virtualResource)
             continue;
@@ -231,7 +238,7 @@ void check_swap_out_impl(struct usm_event* usmEvent) {
             struct usm_swap_dev* swapDev = pick_swap_device_impl(usmEvent->origin);
 
             if (swapDev) {
-                struct page * page = get_usm_page_from_paddr(resource.physicalId)
+                struct page * page = get_usm_page_from_paddr(resource.physicalId);
 
                 node->page = page;
                 node->proc = page->process;
@@ -268,8 +275,15 @@ void check_swap_in_impl(struct usm_event* usmEvent) {
     struct resource resource;
     struct to_swap* node = (struct to_swap *) malloc(sizeof(struct to_swap));
 
-    for (unsigned long i = 0; i < nb_resources; i++) {
+    for (unsigned long i = 0; i < nb_physical_resources(); i++) {
         resource = resourceList[i];
+
+        if (!some_virtual_valid()) {
+            free(event);
+            free(node);
+            trace("TRACE: exiting sOS::API::check_swap_in -- no need to continue\n");
+            return;
+        }
 
         if (resource.virtualResource)
             continue;
@@ -280,7 +294,7 @@ void check_swap_in_impl(struct usm_event* usmEvent) {
             struct usm_swap_dev* swapDev = pick_swap_device_impl(usmEvent->origin);
 
             if (swapDev) {
-                struct page * page = get_usm_page_from_paddr(resource.physicalId)
+                struct page * page = get_usm_page_from_paddr(resource.physicalId);
 
                 node->page = page;
                 node->proc = page->process;
@@ -304,16 +318,16 @@ void check_swap_in_impl(struct usm_event* usmEvent) {
     trace("TRACE: exiting sOS::API::check_swap_in\n");
 }
 
-create_usm_bindings(policy1, policy1_detail)
 create_usm_bindings(fifo, fifo_policy_detail)
 create_usm_bindings(round_robin, rr_policy_detail)
+create_usm_bindings(cfs, cfs_policy_detail)
 
 int policy1_evict_setup(unsigned int pagesNumber) {
     trace("TRACE: entering sOS::API::evict_setup\n");
 
-    register_policy(policy1, policy1_detail)
     register_policy(fifo, fifo_policy_detail)
     register_policy(round_robin, rr_policy_detail)
+    register_policy(cfs, cfs_policy_detail)
 
     usm_evict_fallback = &handle_evict_request_impl;
     do_cond_swap_out = &check_swap_out_impl;

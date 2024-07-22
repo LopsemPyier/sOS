@@ -7,6 +7,7 @@
 
 #include "api.h"
 #include "queues.h"
+#include "stats.h"
 
 extern struct policy_detail cfs_policy_detail;
 

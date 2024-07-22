@@ -83,12 +83,13 @@ struct policy_function cfs_policy_functions = {
 struct policy_detail cfs_policy_detail = {
         .name = "cfsPolicy",
         .functions = &cfs_policy_functions,
-        .is_default = false
+        .is_default = true
 };
 
 static inline int cfs_policy_select_phys_to_virtual(struct sOSEvent *event) {
     trace("TRACE: entering cfs_policy::select_phys_to_virt\n");
 
+        store_queues();
     struct timespec start, end;
     clock_gettime(CLOCK_MONOTONIC_RAW, &start);
 
@@ -132,6 +133,7 @@ static bool is_evict_able(struct optVirtualResourceList* virtual, struct timespe
 
 static inline int cfs_policy_select_virtual_to_evict(struct sOSEvent* event) {
     trace("TRACE: entering cfs_policy::select_virtual_to_evict\n");
+        store_queues();
     struct timespec start, end;
     clock_gettime(CLOCK_MONOTONIC_RAW, &start);
 
@@ -156,6 +158,7 @@ static inline int cfs_policy_select_virtual_to_evict(struct sOSEvent* event) {
 
 static inline int cfs_policy_select_virtual_to_load(struct sOSEvent* event) {
     // trace("TRACE: entering cfs_policy::select_virtual_to_load\n");
+        store_queues();
     struct timespec start, end;
     clock_gettime(CLOCK_MONOTONIC_RAW, &start);
 
@@ -203,6 +206,7 @@ static inline int cfs_policy_select_virtual_to_load(struct sOSEvent* event) {
 static inline int cfs_policy_save_context(struct sOSEvent* event) {
     trace("TRACE: entering cfs_policy::save_context\n");
 
+        store_queues();
     struct timespec start, end;
     clock_gettime(CLOCK_MONOTONIC_RAW, &start);
 
@@ -222,6 +226,7 @@ static inline int cfs_policy_save_context(struct sOSEvent* event) {
 static inline int cfs_policy_restore_context(struct sOSEvent* event) {
     trace("TRACE: entering cfs_policy::restore_context\n");
 
+        store_queues();
     struct timespec start, end;
     clock_gettime(CLOCK_MONOTONIC_RAW, &start);
 
@@ -241,6 +246,7 @@ static inline int cfs_policy_restore_context(struct sOSEvent* event) {
 static inline int cfs_policy_on_yield(struct sOSEvent *event) {
     trace("TRACE: entering cfs_policy::on_yield\n");
 
+        store_queues();
     struct timespec start, end;
     clock_gettime(CLOCK_MONOTONIC_RAW, &start);
 
@@ -271,6 +277,7 @@ static inline int cfs_policy_on_yield(struct sOSEvent *event) {
 static inline int cfs_policy_on_ready(struct sOSEvent* event) {
     trace("TRACE: entering cfs_policy::on_ready\n");
 
+        store_queues();
     struct timespec start, end;
     clock_gettime(CLOCK_MONOTONIC_RAW, &start);
 
@@ -300,6 +307,7 @@ static inline int cfs_policy_on_ready(struct sOSEvent* event) {
 static inline int cfs_policy_on_invalid(struct sOSEvent* event) {
     trace("TRACE: entering cfs_policy::on_invalid\n");
 
+        store_queues();
     struct timespec start, end;
     clock_gettime(CLOCK_MONOTONIC_RAW, &start);
 
@@ -338,6 +346,7 @@ static inline int cfs_policy_on_invalid(struct sOSEvent* event) {
 static inline int cfs_policy_on_hints(struct sOSEvent* event, struct HintsPayload* payload) {
     trace("TRACE: entering cfs_policy::on_hints\n");
 
+        store_queues();
     struct timespec start, end;
     clock_gettime(CLOCK_MONOTONIC_RAW, &start);
     struct optVirtualResourceList* virtual;
@@ -370,6 +379,19 @@ static inline int cfs_policy_on_hints(struct sOSEvent* event, struct HintsPayloa
             }
             virtual->resource->priority = payload->priority;
             break;
+
+        case UTILISATION:
+            virtual = get_virtual_resource(event->virtual_id, &virtual_on_resource_queue);
+            if (!virtual) {
+                virtual = get_virtual_resource(event->virtual_id, &virtual_valid_queue);
+                if (!virtual) {
+                    virtual = get_virtual_resource(event->virtual_id, &virtual_invalid_queue);
+                    if (!virtual)
+                        return 1;
+                }
+            }
+            virtual->resource->utilisation = (payload->utilisation * inverted_weights[virtual->resource->priority]) >> 22;
+            break;
     }
 
     clock_gettime(CLOCK_MONOTONIC_RAW, &end);
@@ -380,6 +402,7 @@ static inline int cfs_policy_on_hints(struct sOSEvent* event, struct HintsPayloa
 
 static inline int cfs_policy_on_protection_violation(struct sOSEvent* event) {
     trace("TRACE: entering cfs_policy::on_protection_violation\n");
+        store_queues();
     struct timespec start, end;
     clock_gettime(CLOCK_MONOTONIC_RAW, &start);
 
@@ -392,6 +415,7 @@ static inline int cfs_policy_on_protection_violation(struct sOSEvent* event) {
 static inline int cfs_policy_on_create_thread(struct sOSEvent* event) {
     trace("TRACE: entering cfs_policy::on_create_thread\n");
 
+        store_queues();
     struct timespec start, end;
     clock_gettime(CLOCK_MONOTONIC_RAW, &start);
 
@@ -410,10 +434,11 @@ static inline int cfs_policy_on_dead_thread(struct sOSEvent* event) {
     trace("TRACE: entering cfs_policy::on_dead_thread\n");
 
 
+        store_queues();
     struct timespec start, end;
     clock_gettime(CLOCK_MONOTONIC_RAW, &start);
 
-    remove_virtual_resource(event->virtual_id);
+    // remove_virtual_resource(event->virtual_id);
     remove_virtual_resources_of_proc(event->attached_process);
 
     clock_gettime(CLOCK_MONOTONIC_RAW, &end);
@@ -424,6 +449,7 @@ static inline int cfs_policy_on_dead_thread(struct sOSEvent* event) {
 
 static inline int cfs_policy_on_sleep_state_change(struct sOSEvent* event) {
     trace("TRACE: entering cfs_policy::on_sleep_state_change\n");
+        store_queues();
     struct timespec start, end;
     clock_gettime(CLOCK_MONOTONIC_RAW, &start);
 
@@ -467,6 +493,7 @@ static inline int cfs_policy_on_sleep_state_change(struct sOSEvent* event) {
 
 static inline int cfs_policy_on_signal(struct sOSEvent* event) {
     trace("TRACE: entering cfs_policy::on_signal\n");
+        store_queues();
     struct timespec start, end;
     clock_gettime(CLOCK_MONOTONIC_RAW, &start);
 
@@ -480,6 +507,8 @@ static inline int cfs_policy_init(unsigned long numberOfResource) {
     trace("TRACE: entering cfs_policy::init\n");
 
     init_statistics();
+    init_stats_queues();
+        store_queues();
     struct timespec start, end;
     clock_gettime(CLOCK_MONOTONIC_RAW, &start);
 
@@ -493,6 +522,10 @@ static inline int cfs_policy_init(unsigned long numberOfResource) {
     virtual_valid_queue.asc = true;
     virtual_valid_queue.sortedBy = UTILIZATION;
 
+    virtual_on_resource_queue.sorted = true;
+    virtual_on_resource_queue.asc = true;
+    virtual_on_resource_queue.sortedBy = UTILIZATION;
+
 
     clock_gettime(CLOCK_MONOTONIC_RAW, &end);
     add_event(NULL, INIT, start, end);
@@ -504,6 +537,7 @@ static inline int cfs_policy_init(unsigned long numberOfResource) {
 void cfs_policy_exit() {
     trace("TRACE: entering cfs_policy::exit\n");
 
+        store_queues();
     struct timespec start, end;
     clock_gettime(CLOCK_MONOTONIC_RAW, &start);
 

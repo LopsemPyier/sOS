@@ -11,19 +11,27 @@ struct Queue physical_used_list;
 
 void display_physical_list(struct Queue* queue) {
     struct optEludeList* phys;
+    int nb = 0;
     list_for_each_entry(phys, &queue->lst, iulist) {
         printf("%lu ", phys->resource->physicalId);
+        nb++;
+        if (nb >= 10)
+            return;
     }
 }
 
 void display_virtual_queue(struct Queue* queue) {
     struct optVirtualResourceList* node;
+    int nb = 0;
     list_for_each_entry(node, &queue->lst, iulist) {
         printf("%lu ", node->resource->virtualId);
         if (queue->sorted) {
             if (queue->sortedBy == UTILIZATION)
                 printf("(%lu) ", node->resource->utilisation);
         }
+        nb++;
+        if (nb >= 10)
+            return;
     }
 }
 
@@ -43,7 +51,6 @@ struct optEludeList * get_physical_resource(unsigned long id, struct Queue * que
     }
     struct optEludeList *res,*tmp;
     list_for_each_entry_safe(res, tmp, &queue->lst, iulist) {
-        printf("For res %lu\n", res->resource->physicalId);
         if (res->resource->physicalId == id) {
             break;
         }
@@ -73,7 +80,6 @@ struct optVirtualResourceList * get_virtual_resource(unsigned long id, struct Qu
     }
     struct optVirtualResourceList *res,*tmp;
     list_for_each_entry_safe(res, tmp, &queue->lst, iulist) {
-        printf("For res %lu\n", res->resource->virtualId);
         if (res->resource->virtualId == id)
             break;
     }
@@ -210,7 +216,7 @@ void physical_move_to(struct optEludeList* item, struct Queue* src, struct Queue
     pthread_mutex_unlock(&src->lock);
 
     pthread_mutex_lock(&dst->lock);
-    list_move_tail(&item->iulist, &dst->lst);
+    list_move(&item->iulist, &dst->lst);
     dst->nb++;
     pthread_mutex_unlock(&dst->lock);
 }
@@ -227,24 +233,43 @@ void virtual_move_to(struct optVirtualResourceList* item, struct Queue* src, str
 }
 
 struct optVirtualResourceList * add_virtual_resource(unsigned long id, unsigned long proc) {
-    struct optVirtualResourceList* virtualResource = (struct optVirtualResourceList*) malloc(sizeof (struct optVirtualResourceList));
+    struct optVirtualResourceList* virtualResource;
+    virtualResource = get_virtual_resource(id, &virtual_on_resource_queue);
+    if (!virtualResource) {
+        virtualResource = get_virtual_resource(id, &virtual_valid_queue);
+        if (!virtualResource) {
+            virtualResource = get_virtual_resource(id, &virtual_invalid_queue);
+            if (!virtualResource) {
+                virtualResource = (struct optVirtualResourceList*) malloc(sizeof (struct optVirtualResourceList));
 
-    INIT_LIST_HEAD(&(virtualResource->iulist));
+                INIT_LIST_HEAD(&(virtualResource->iulist));
 
-    virtualResource->resource = (struct virtual_resource*) malloc(sizeof (struct virtual_resource));
+                virtualResource->resource = (struct virtual_resource*) malloc(sizeof (struct virtual_resource));
+                virtualResource->resource->physical_resource = NULL;
+                INIT_LIST_HEAD(&virtualResource->resource->physical_affinity);
 
+                pthread_mutex_lock(&virtual_invalid_queue.lock);
+                list_add_tail(&(virtualResource->iulist), &virtual_invalid_queue.lst);
+                virtual_invalid_queue.nb++;
+                pthread_mutex_unlock(&virtual_invalid_queue.lock);
+            }
+        } else {
+            virtual_move_to(virtualResource, &virtual_valid_queue, &virtual_invalid_queue);
+        }
+    } else {
+        virtual_move_to(virtualResource, &virtual_on_resource_queue, &virtual_invalid_queue);
+    }
+    if (virtualResource->resource->physical_resource) {
+        struct optEludeList* physicalResource = virtualResource->resource->physical_resource;
+        physical_move_to(physicalResource, &physical_used_list, &physical_available_list);
+        physicalResource->resource->virtualResource = NULL;
+    }
     virtualResource->resource->physical_resource = NULL;
     virtualResource->resource->virtualId = id;
     virtualResource->resource->last_event_id = 0;
     virtualResource->resource->process = proc;
     virtualResource->resource->utilisation = 0;
     virtualResource->resource->priority = 0;
-    INIT_LIST_HEAD(&virtualResource->resource->physical_affinity);
-
-    pthread_mutex_lock(&virtual_invalid_queue.lock);
-    list_add_tail(&(virtualResource->iulist), &virtual_invalid_queue.lst);
-    virtual_invalid_queue.nb++;
-    pthread_mutex_unlock(&virtual_invalid_queue.lock);
 
     return virtualResource;
 }
@@ -256,10 +281,10 @@ struct optEludeList * add_physical_resource(struct resource *physical) {
 
     physicalResource->resource = physical;
 
-    pthread_mutex_lock(&physical_used_list.lock);
-    list_add_tail(&(physicalResource->iulist), &physical_used_list.lst);
-    physical_used_list.nb++;
-    pthread_mutex_unlock(&physical_used_list.lock);
+    pthread_mutex_lock(&physical_available_list.lock);
+    list_add_tail(&(physicalResource->iulist), &physical_available_list.lst);
+    physical_available_list.nb++;
+    pthread_mutex_unlock(&physical_available_list.lock);
 
     return physicalResource;
 }

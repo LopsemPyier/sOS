@@ -69,10 +69,12 @@ struct sOSEvent {
 struct HintsPayload {
     enum HintsType {
         PRIORITY,
-        PHYSICAL_AFFINITY
+        PHYSICAL_AFFINITY,
+        UTILISATION,
     } type;
     union {
         unsigned long priority;
+        unsigned long utilisation;
         struct list_head physicals;
     };
 };

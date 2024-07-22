@@ -53,7 +53,7 @@ struct policy_function rr_policy_functions = {
 struct policy_detail rr_policy_detail = {
         .name = "rrPolicy",
         .functions = &rr_policy_functions,
-        .is_default = true
+        .is_default = false
 };
 
 
